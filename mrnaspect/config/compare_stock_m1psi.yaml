@@ -1,0 +1,23 @@
+# Stock side of a stock-vs-FT comparison. Researcher recipe, not product config, and not
+# shipped: package-data carries only run_config.yaml and config/nulls/.
+# Run both sides over the SAME --input-dir. Pair: compare_ft_m1psi.yaml.
+#
+# The released fine-tune, m1psi_tuned_v1, was trained from rna004_130bps_hac@v5.3.0, so
+# that is the stock side: the same architecture, and the model it started from.
+
+mode: pod5
+
+# No default reference: a valid FASTA of the wrong construct maps ~0% and reads like a
+# dead flow cell.
+reference: /path/to/your/construct_ref.fasta   # <-- EDIT
+
+basecall:
+  model: /path/to/dorado-models/rna004_130bps_hac@v5.3.0   # <-- EDIT
+align:
+  minimap2_flags: "-ax map-ont -k 7 -w 5 --secondary=no -y"
+
+# Without an arm the poly(A) ruler correction is withheld. `arm` covers every construct;
+# `arms` names the exceptions, e.g. {construct_B: U}.
+sample:
+  arm: m1psi
+  arms: {}

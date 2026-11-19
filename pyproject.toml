@@ -1,0 +1,108 @@
+# =============================================================================
+# mRNAspect Core — packaging metadata
+# =============================================================================
+# This file is the LABEL on the box: what this package is called, what version it
+# is, and what it needs in order to run. It does not install anything by itself.
+#
+# Scope, and why it is much smaller than pixi.toml: `pixi.toml` describes the
+# RESEARCH ENVIRONMENT (Snakemake, seaborn, scikit-learn, scipy, pandas, pod5 …),
+# which is what this repo's analyses need. This file describes CORE — what an end
+# user needs to run the QC pipeline. Measured 2026-09-19: Core's only top-level
+# third-party imports are numpy and pysam. Copying pixi's list here would make a
+# QC lab install Snakemake to render a certificate.
+#
+# Division of labour with conda/pixi (decided 2026-09-19):
+#   * conda (pixi.toml) is the sole provider of BINARY dependencies inside this
+#     repo's environment — pysam is a Python shell around a C library (htslib) and
+#     conda ships them as a matched pair. A PyPI wheel brings its OWN htslib, and
+#     mixing the two can change how BAM records are read. That is a paper number.
+#   * the `dependencies` below are a DECLARATION for outside consumers
+#     (`pip install mrnaspect`). Inside our env the conda pins win, which is why the
+#     editable install is done with dependency resolution switched off.
+# =============================================================================
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mrnaspect"
+# Read from `mrnaspect.__init__.__version__` rather than written here. One source, on
+# purpose: `provenance.write_result_json` stamps that same attribute into every
+# Tier-A artifact as `software_version`. A second number in this file could drift
+# from the one in the results, and then the package says one thing and the
+# evidence says another.
+dynamic = ["version"]
+description = "Unified QC for mRNA therapeutics from Oxford Nanopore direct RNA sequencing (RNA004)"
+readme = "README.md"
+# MIT (2026-11-13). The SPDX form, which setuptools reads from 77 on.
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.10"
+
+# MEASURED, not guessed: the only third-party modules Core imports at top level,
+# plus PyYAML. PyYAML is required rather than optional even though `main.py`
+# imports it inside a function — that lazy import protects IMPORTABILITY, while
+# `load_config()` runs on every single run, so without it nothing works.
+#
+# Deliberately unpinned. Inside this repo conda pins the versions; a range here
+# would be a second, competing constraint on the same packages (see the header).
+dependencies = [
+    "numpy",
+    "pysam",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# The CoA render stack. Genuinely optional, and the CODE already says so: the
+# reporter imports jinja2/weasyprint/matplotlib inside `_emit_report` and
+# `OfflinePipeline._finalize` catches ModuleNotFoundError, writes qc_result.json
+# and reports `status="render_unavailable"`. So `pip install mrnaspect` gives working
+# QC with machine-readable output; `pip install mrnaspect[report]` adds HTML + PDF.
+# weasyprint is also the hardest dependency to install (it needs the cairo/pango
+# C libraries), which is a second reason not to make it mandatory.
+report = [
+    "jinja2",
+    "weasyprint",
+    "matplotlib",
+]
+
+# Installing the package puts these on PATH, runnable from ANY directory. That
+# matters for the Tauri GUI, which launches Core as a subprocess from whatever
+# working directory the app happens to have — `python -m mrnaspect.main` only works
+# where `mrnaspect/` is visible.
+[project.scripts]
+mrnaspect = "mrnaspect.main:main"
+mrnaspect-realtime = "mrnaspect.realtime.main:main"
+
+[tool.setuptools.dynamic]
+version = {attr = "mrnaspect.__version__"}
+
+[tool.setuptools.packages.find]
+include = ["mrnaspect*"]
+# Tests stay in the repo but out of the distribution. The old reason ("they read
+# fixtures outside the package") stopped being true on 2026-09-19 — `mrnaspect/tests/data/`
+# now carries both the BAM and the reference, so the suite IS self-contained and would
+# run from an installed copy. It is excluded for a different reason: the fixture BAM is
+# 815 KB, which is most of the wheel, and an end user running the GUI never invokes
+# pytest. A `test` extra can add it back the day someone wants `mrnaspect --self-test`.
+exclude = ["mrnaspect.tests*"]
+
+# Non-Python files that must travel with the code. Without these a built wheel
+# contains only .py files and the install fails at RUNTIME, not at install time —
+# `load_config` even has the error message for it ("the shipped run_config.yaml is
+# the source of the pipeline's driver defaults; if it is missing the package
+# install is broken").
+#
+# NOT shipped, on purpose: `config/compare_{ft,stock}_m1psi.yaml` are lab
+# comparison configs carrying absolute paths into this machine, and the three
+# `.md` files in the package root are development notes. Both belong to the
+# deployment bucket, not to the product.
+[tool.setuptools.package-data]
+mrnaspect = ["config/run_config.yaml", "config/nulls/*"]
+# assets/ carries the plotly bundle the terminal report embeds. Without it an INSTALLED
+# copy raises FileNotFoundError at the final render — the run fails after all the work,
+# and only on a packaged install, never in the repo. Guarded by
+# mrnaspect/tests/test_plotly_bundle_contract.py.
+"mrnaspect.reporting" = ["templates/*.html", "assets/*.js"]
+"mrnaspect.wrappers" = ["*.sh"]

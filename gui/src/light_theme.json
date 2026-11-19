@@ -1,0 +1,96 @@
+{
+  "colors": {
+    "#e1e0d9": "#cfcec6"
+  },
+  "layout": {
+    "axis": {
+      "gridcolor": "#cfcec6",
+      "linecolor": "#67655f",
+      "tickcolor": "#67655f",
+      "tickfont": {
+        "color": "#52514e"
+      },
+      "title": {
+        "font": {
+          "color": "#52514e"
+        }
+      },
+      "zeroline": false
+    },
+    "font": {
+      "color": "#52514e"
+    },
+    "hoverlabel": {
+      "bgcolor": "#ffffff",
+      "bordercolor": "#c3c2b7",
+      "font": {
+        "color": "#0b0b0b"
+      }
+    },
+    "legend": {
+      "font": {
+        "color": "#52514e"
+      }
+    },
+    "paper_bgcolor": "rgba(0,0,0,0)",
+    "plot_bgcolor": "rgba(0,0,0,0)",
+    "rangeslider": {
+      "bgcolor": "#f3f5f8",
+      "bordercolor": "#e1e0d9"
+    },
+    "title": {
+      "font": {
+        "color": "#0b0b0b"
+      }
+    }
+  },
+  "palette": "Lagoon (fine-tuned)",
+  "sequential": [
+    [
+      0.0,
+      "#eef4fd"
+    ],
+    [
+      0.25,
+      "#9ec5f4"
+    ],
+    [
+      0.5,
+      "#5598e7"
+    ],
+    [
+      0.75,
+      "#2a78d6"
+    ],
+    [
+      1.0,
+      "#104281"
+    ]
+  ],
+  "series": [
+    "#158ae0",
+    "#779302",
+    "#7c3aed",
+    "#04837b"
+  ],
+  "tokens": {
+    "accent": "#2f5fc4",
+    "accent-fill": "#2f5fc4",
+    "emphasis": "#7f1d1d",
+    "grid": "#cfcec6",
+    "ink-muted": "#67655f",
+    "ink-primary": "#0b0b0b",
+    "ink-secondary": "#52514e",
+    "rule": "#e1e0d9",
+    "rule-strong": "#c3c2b7",
+    "status-good": "#006300",
+    "status-serious": "#a3231c",
+    "status-serious-surface": "#fdecea",
+    "status-warning": "#8a5a00",
+    "status-warning-surface": "#fdf4e3",
+    "surface-menu": "#eef0f3",
+    "surface-page": "#f3f5f8",
+    "surface-panel": "#ffffff",
+    "surface-raised": "#e8eaed"
+  }
+}

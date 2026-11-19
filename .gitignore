@@ -1,0 +1,48 @@
+# Build / install artifacts
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+
+# pixi's materialized environment
+.pixi/
+
+# Sequencing data. A user's own BAM/POD5 must never be committed by accident, so the
+# rule is blanket — with ONE exception, because the test fixtures ARE part of the package.
+# (A blanket rule once silently swallowed the suite's only BAM, and the tests then
+# skipped rather than failed: green over code that never ran.)
+*.bam
+*.bai
+*.pod5
+*.fastq
+*.fastq.gz
+# The fixtures' own directory, held to the files there by test_fixture_data_is_not_ignored.py.
+!mrnaspect/tests/data/*.bam
+!mrnaspect/tests/data/*.bai
+
+# Run outputs
+run_*/
+
+# The commit an app was built from. Staging writes it into the INSTALLED package
+# (scripts/bundle_build_record.py); in the source tree it would make every result
+# name that commit instead of asking git (test_build_record.py holds this).
+/mrnaspect/_build.json
+
+# Names that exist only on the developing lab's machines (mrnaspect/tests/conftest.py,
+# LAB_PRIVATE). Never tracked: the checks that keep those names out of what is published
+# read them from here.
+/lab_private.json
+
+# default output dir of scripts/run_tests_sharded.sh
+.pytest_shards/
+
+# Session worktrees the desktop app creates here; never part of the project.
+.claude/
+
+# `tauri icon` writes icons for every platform; the app is built for macOS alone, and
+# tauri.conf.json names the files it uses.
+gui/src-tauri/icons/android/
+gui/src-tauri/icons/ios/

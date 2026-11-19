@@ -1,0 +1,917 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mRNAspect</title>
+    <!-- The saved theme before the first paint, so a light window does not open dark and
+         then flip (Settings › Display; main.ts keeps the key and the title bar). -->
+    <script>try { if (localStorage.getItem("mrnaspect.theme") === "light") document.documentElement.dataset.theme = "light"; } catch (e) {}</script>
+    <style>
+      /* Tokens. The type ladder is the GUI's own (figspec.GUI_TYPE_PX, 2026-11-12:
+         larger on screen; five steps, each >= 13% above the last); the spacing ladder,
+         the fonts and the series line rule are the report's (figspec), checked by
+         test_gui_design_tokens.py. The colours are the DARK set (figspec.DARK, palette
+         "A Graphite", 2026-11-06), checked against gui/src/dark_theme.json by the same
+         test: the GUI never invents a colour. The report and its PDF stay white paper
+         and read none of this. */
+      :root {
+        --type-micro: 13px;
+        --type-small: 15px;
+        --type-body: 17px;
+        --type-heading: 20px;
+        --type-title: 24px;
+        --series-line-width: 1.5px;
+        --series-fill-alpha: 0.25;
+        --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+        --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        --space-2xs: 2px;
+        --space-xs: 4px;
+        --space-s: 8px;
+        --space-m: 12px;
+        --space-l: 16px;
+        --space-xl: 24px;
+        --space-2xl: 32px;
+        --space-3xl: 48px;
+        --surface-menu: #0e1115;
+        --surface-page: #13171c;
+        --surface-panel: #1b2027;
+        --surface-raised: #242a32;
+        --rule: #2c333c;
+        --rule-strong: #4a525c;
+        --grid: #424a55;
+        --ink-primary: #e8ebee;
+        --ink-secondary: #aab3bd;
+        --ink-muted: #8a949f;
+        --accent: #80b3fd;
+        --accent-fill: #1a6fe1;
+        --status-serious: #ff5337;
+        --status-warning: #f3b94c;
+        --status-good: #32ab5d;
+        --status-serious-surface: #3a1c1a;
+        --status-warning-surface: #33290f;
+        --emphasis: #ff7a70;
+        --series-1: #38bdf8;
+        --series-2: #a5e639;
+        --series-3: #9c83fe;
+        --series-4: #01e8c7;
+        /* Dark only (2026-11-05, decided 2026-11-06), as MinKNOW is. Native controls
+           follow, and tauri.conf.json pins the title bar dark. */
+        color-scheme: dark;
+
+        /* The Overview's own sizes (--ov-*, 2026-11-06) folded into the ladder on
+           2026-11-12: with them the run view had nine sizes, some half a pixel apart. */
+        /* Text on the accent fill and the white of a filled button: 4.77:1 on --accent-fill. */
+        --on-accent: #ffffff;
+
+        /* The channel states, bound by STATE to the series slots the report's occupancy
+           figure gives them (figspec _PORE_BANDS, test_gui_state_bar.py); every other
+           state folds into "other". */
+        --state-strand: var(--series-1);
+        --state-pore: var(--series-2);
+        --state-adapter: var(--series-3);
+        --state-unavailable: var(--series-4);
+        --state-other: var(--rule-strong);
+
+        /* The colour code per result type (figspec.RESULT_COLOURS; 2026-11-12, option
+           A): six types, four families, bound to the series slots rather than copied, so
+           the light theme moves them with the series (test_gui_design_tokens.py). */
+        --result-read-length: var(--series-1);
+        --result-full-length: var(--series-1);
+        --result-polya: var(--series-3);
+        --result-quality: var(--series-4);
+        --result-identity: var(--series-4);
+        --result-constructs: var(--series-2);
+        /* The colour a page-drawn mark takes: [data-result] sets it per card and panel. */
+        --mark: var(--series-1);
+
+        /* The box over an empty Overview (2026-11-13): translucent black in both
+           themes, white text on it. */
+        --scrim: rgba(0, 0, 0, 0.62);
+        --on-scrim: var(--on-accent);
+        /* A quiet action: the accent as a tint under the accent fill's edge
+           (2026-11-13: the filled report button stood out too much). Bound to the fill,
+           so each theme tints with its own. */
+        --accent-soft: color-mix(in srgb, var(--accent-fill) 18%, transparent);
+        /* The band above an Overview histogram that holds its notes: one line of the
+           notes' text with its leading. */
+        --plot-band: calc(var(--type-micro) * 1.4);
+      }
+
+      /* Light (2026-11-12: for manuscript figures and poster screenshots), chosen in
+         Settings › Display; dark stays the default. figspec.LIGHT and CATEGORICAL,
+         the report's own series, so a light chart is the report's chart. Checked against
+         figspec by test_gui_design_tokens.py, like the dark set above. */
+      :root[data-theme="light"] {
+        --surface-menu: #eef0f3;
+        --surface-page: #f3f5f8;
+        --surface-panel: #ffffff;
+        --surface-raised: #e8eaed;
+        --rule: #e1e0d9;
+        --rule-strong: #c3c2b7;
+        --grid: #cfcec6;
+        --ink-primary: #0b0b0b;
+        --ink-secondary: #52514e;
+        --ink-muted: #67655f;
+        --accent: #2f5fc4;
+        --accent-fill: #2f5fc4;
+        --status-serious: #a3231c;
+        --status-warning: #8a5a00;
+        --status-good: #006300;
+        --status-serious-surface: #fdecea;
+        --status-warning-surface: #fdf4e3;
+        --emphasis: #7f1d1d;
+        --series-1: #158ae0;
+        --series-2: #779302;
+        --series-3: #7c3aed;
+        --series-4: #04837b;
+        color-scheme: light;
+      }
+      [data-result="read-length"] { --mark: var(--result-read-length) }
+      [data-result="full-length"] { --mark: var(--result-full-length) }
+      [data-result="polya"] { --mark: var(--result-polya) }
+      [data-result="quality"] { --mark: var(--result-quality) }
+      [data-result="identity"] { --mark: var(--result-identity) }
+      [data-result="constructs"] { --mark: var(--result-constructs) }
+
+      * { box-sizing:border-box }
+      html { height:100% }
+      body { height:100%; margin:0; background:var(--surface-page); color:var(--ink-primary);
+             font-family:var(--font-sans); font-size:var(--type-body);
+             font-variant-numeric:tabular-nums }
+      button, input, select { font:inherit; color:inherit }
+      :focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+      [hidden] { display:none !important }
+
+      /* --- shell: top bar, left menu, page ---------------------------------------- */
+      .app { height:100vh; display:flex; flex-direction:column; overflow:hidden }
+      .topbar { flex:none; display:flex; align-items:center; gap:var(--space-m);
+        height:56px; padding:0 var(--space-l); background:var(--surface-menu);
+        border-bottom:1px solid var(--rule) }
+      .topbar .titles { display:flex; flex-direction:column }
+      .pagetitle { font-size:var(--type-heading); font-weight:650 }
+      .spacer { flex:1 }
+      .iconbtn { display:inline-flex; align-items:center; justify-content:center; gap:6px;
+        min-width:40px; height:40px; padding:0 var(--space-s); background:transparent; border:0;
+        border-radius:8px; color:var(--ink-secondary); cursor:pointer }
+      .iconbtn:hover { background:var(--surface-raised); color:var(--ink-primary) }
+      svg.i { width:20px; height:20px; fill:none; stroke:currentColor; stroke-width:1.8;
+        stroke-linecap:round; stroke-linejoin:round; flex:none }
+      .frame { flex:1; min-height:0; display:flex }
+      .nav { flex:none; width:210px; background:var(--surface-menu); padding:10px 8px;
+        display:flex; flex-direction:column; gap:4px; border-right:1px solid var(--rule) }
+      .app.collapsed .nav { width:64px } .app.collapsed .nav .lbl { display:none }
+      .nav button { display:flex; align-items:center; gap:var(--space-m); min-height:44px;
+        padding:0 var(--space-m); border:0; border-radius:8px; background:transparent;
+        color:var(--ink-secondary); text-align:left; cursor:pointer }
+      .nav button:hover { color:var(--ink-primary) }
+      .nav button[aria-current="page"] { background:var(--surface-raised); color:var(--ink-primary); font-weight:600 }
+      .nav button[aria-current="page"] svg.i { stroke:var(--accent) }
+      .nav .lbl { flex:1 }
+      .nav .back { color:var(--accent); font-weight:600 }
+      main { flex:1; min-width:0; min-height:0; overflow:auto; padding:var(--space-m) 20px var(--space-l) }
+      .page { display:flex; flex-direction:column; gap:10px; min-height:100% }
+      .page.center { align-items:center; padding-top:var(--space-2xl) }
+      .page.center > * { width:100%; max-width:960px }
+      h1 { margin:0; font-size:var(--type-title); font-weight:650 }
+      .dim { color:var(--ink-secondary); font-size:var(--type-small) }
+      .dim.err, .err { color:var(--status-serious) }
+      .warn { color:var(--status-warning) }
+
+      /* --- controls --------------------------------------------------------------- */
+      .btn { display:inline-flex; align-items:center; justify-content:center; gap:var(--space-s);
+        height:40px; padding:0 var(--space-l); border-radius:8px; background:transparent;
+        border:1px solid var(--ink-muted); color:var(--ink-primary); cursor:pointer; white-space:nowrap }
+      .btn svg.i { width:18px; height:18px }
+      .btn:hover:not(:disabled) { border-color:var(--ink-primary) }
+      .btn:disabled { color:var(--ink-muted); border-color:var(--rule); cursor:default }
+      .btn.primary { background:var(--accent-fill); border-color:var(--accent-fill); color:var(--on-accent); font-weight:600 }
+      .btn.primary:disabled { background:var(--surface-raised); border-color:var(--surface-raised); color:var(--ink-muted) }
+      .btn.soft { background:var(--accent-soft); border-color:var(--accent-fill); color:var(--ink-primary); font-weight:600 }
+      .btn.soft svg.i { stroke:var(--accent) }
+      .btn.soft:disabled { background:transparent; border-color:var(--rule); color:var(--ink-muted) }
+      .btn.soft:disabled svg.i { stroke:currentColor }
+      .btn.danger { border-color:var(--status-serious); color:var(--status-serious); font-weight:600 }
+      .btn.danger:disabled { border-color:var(--rule); color:var(--ink-muted) }
+      .btn.danger-fill { background:var(--status-serious); border-color:var(--status-serious);
+        color:var(--surface-menu); font-weight:650 }
+      .field { display:flex; flex-direction:column; gap:6px }
+      .field > label { font-weight:600 }
+      /* A field's own input (Run name) keeps its height: flex:1 in a column took it to a
+         sliver (Chromium check, 2026-11-12). */
+      .field > input:not([type=checkbox]) { flex:none }
+      .row { display:flex; gap:var(--space-s) }
+      input:not([type=checkbox]), select { height:40px; padding:0 var(--space-m);
+        background:var(--surface-page); border:1px solid var(--ink-muted); border-radius:8px;
+        color:var(--ink-primary); font-family:var(--font-mono); font-size:var(--type-small);
+        min-width:0; flex:1 }
+      select { font-family:var(--font-sans) }
+      /* A reference pasted in place of a file (2026-11-13). */
+      textarea { padding:var(--space-s) var(--space-m); background:var(--surface-page);
+        border:1px solid var(--ink-muted); border-radius:8px; color:var(--ink-primary);
+        font-family:var(--font-mono); font-size:var(--type-small); line-height:1.45;
+        min-height:180px; resize:vertical; width:100% }
+      textarea::placeholder { color:var(--ink-secondary); opacity:1 }
+      #refpaste { display:flex; flex-direction:column; gap:var(--space-s) }
+      #refpaste .row label { color:var(--ink-secondary); align-self:center; flex:none }
+      /* The placeholder carries the config's value (I2), so it is text a person reads. */
+      input::placeholder { color:var(--ink-secondary); opacity:1 }
+      input:not([type=checkbox]):disabled { color:var(--ink-muted); border-color:var(--rule) }
+      fieldset.card { border:0; margin:0; min-width:0 }
+      .narrow { max-width:860px } .endrow { justify-content:flex-end }
+      select.short { max-width:280px; flex:none; width:280px }
+      .dlghead { align-items:center; justify-content:space-between }
+      .card { background:var(--surface-panel); border-radius:12px; padding:22px 24px;
+        display:flex; flex-direction:column; gap:18px }
+      .banner { padding:var(--space-s) var(--space-m); border-radius:8px; font-size:var(--type-small);
+        background:var(--status-warning-surface); color:var(--status-warning) }
+      .banner button { background:none; border:0; padding:0; color:inherit; text-decoration:underline; cursor:pointer }
+      details.info { display:inline-block; position:relative }
+      details.info > summary { list-style:none; cursor:pointer; color:var(--ink-secondary);
+        width:22px; height:22px; display:inline-flex; align-items:center; justify-content:center }
+      details.info > summary::-webkit-details-marker { display:none }
+      details.info > p { position:absolute; z-index:5; top:24px; left:0; width:360px; margin:0;
+        padding:var(--space-m); background:var(--surface-raised); border:1px solid var(--rule);
+        border-radius:8px; font-size:var(--type-small); color:var(--ink-primary); line-height:1.45 }
+
+      /* --- Start: cards and the 3-step flow ---------------------------------------- */
+      .kinds { display:grid; grid-template-columns:repeat(auto-fit, minmax(240px, 1fr)); gap:14px }
+      .kind { display:flex; flex-direction:column; align-items:flex-start; gap:14px; min-height:160px;
+        padding:22px; text-align:left; background:var(--surface-panel); border:1px solid var(--rule);
+        border-radius:12px; color:var(--ink-primary); cursor:pointer }
+      .kind:hover { border-color:var(--ink-muted) }
+      .kind .badge { display:flex; align-items:center; justify-content:center; width:44px; height:44px;
+        border-radius:10px; background:var(--surface-raised); color:var(--accent) }
+      .kind .badge svg.i { width:24px; height:24px }
+      .kind b { font-size:var(--type-heading); font-weight:650 }
+      .kind span { color:var(--ink-secondary) }
+      .steps { display:flex; gap:var(--space-xl); list-style:none; margin:0; padding:0;
+        border-bottom:1px solid var(--rule) }
+      .steps li { padding:var(--space-s) 0; color:var(--ink-secondary) }
+      .steps li[aria-current="step"] { color:var(--ink-primary); font-weight:600;
+        border-bottom:2px solid var(--accent); margin-bottom:-1px }
+      .flowfoot { display:flex; align-items:center; gap:var(--space-m) }
+      .missing { color:var(--status-serious); font-size:var(--type-small) }
+      .review { display:grid; grid-template-columns:160px minmax(0,1fr); gap:6px var(--space-m); margin:0 }
+      .review dt { color:var(--ink-secondary) } .review dd { margin:0; overflow-wrap:anywhere }
+      .steps li .linkbtn { font:inherit; text-decoration:none }
+      /* The arm, as two cards (one choice per screen, 2026-11-12). After the generic
+         input rule, which would give a radio a field's height. */
+      .choices { display:grid; grid-template-columns:repeat(auto-fit, minmax(220px, 1fr)); gap:var(--space-m) }
+      .choice { display:flex; align-items:flex-start; gap:var(--space-m); padding:var(--space-l);
+        border:1px solid var(--rule-strong); border-radius:10px; cursor:pointer; font-weight:400 }
+      .choice:has(input:checked) { border-color:var(--accent); background:var(--surface-raised) }
+      .choice input { width:18px; height:18px; flex:none; margin:2px 0 0; padding:0; accent-color:var(--accent-fill) }
+      .choice b { display:block; font-size:var(--type-body); font-weight:600 }
+      .choice small { display:block; margin-top:var(--space-2xs); font-size:var(--type-small); color:var(--ink-secondary) }
+      /* What the picked folder holds, as Core reads it (describe_input). */
+      #inputinfo { display:flex; flex-direction:column; gap:var(--space-s) }
+      .found { display:flex; flex-wrap:wrap; align-items:baseline; gap:var(--space-xs) var(--space-m) }
+      .found b { color:var(--status-good) } .found.none b { color:var(--status-warning) }
+      .found .dim { font-family:var(--font-mono); overflow-wrap:anywhere }
+      .runfacts { display:flex; flex-wrap:wrap; gap:var(--space-xs) var(--space-l); font-size:var(--type-small); color:var(--ink-secondary) }
+      .runlist { display:flex; flex-direction:column; gap:var(--space-xs); max-height:280px; overflow-y:auto }
+      .runrow { display:grid; grid-template-columns:minmax(0,3fr) repeat(4, minmax(0,1fr)); gap:var(--space-m);
+        align-items:center; padding:var(--space-s) var(--space-m); background:var(--surface-page);
+        border:1px solid var(--rule); border-radius:8px; color:var(--ink-primary); text-align:left;
+        cursor:pointer; font-size:var(--type-small) }
+      .runrow:hover { border-color:var(--accent) }
+      .runrow b { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+      .runrow span { color:var(--ink-secondary) }
+      /* The Sample step's declared fields: label beside input, the review's columns. */
+      .pairs { display:grid; grid-template-columns:160px minmax(0,1fr); gap:var(--space-s) var(--space-m); align-items:center }
+      .pairs > label { color:var(--ink-secondary) }
+
+      /* --- the run view: run card, tab row, panels --------------------------------- */
+      .runcard { flex:none; background:var(--surface-panel); border-radius:10px; padding:10px var(--space-l);
+        display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-s) 20px }
+      .runcard .info { flex:999 1 360px; min-width:0; display:flex; flex-direction:column; gap:var(--space-s) }
+      .runcard .rline { display:flex; flex-wrap:wrap; align-items:center; gap:var(--space-s) 18px; font-size:var(--type-small) }
+      .runname { font-size:var(--type-heading); font-weight:650 }
+      .pill { display:inline-flex; align-items:center; gap:6px; height:24px; padding:0 10px;
+        border-radius:12px; background:var(--surface-raised); font-size:var(--type-small); font-weight:600 }
+      .pill i { width:8px; height:8px; border-radius:50% }
+      .pill.running i { background:var(--accent) } .pill.done i { background:var(--ink-muted) }
+      .pill.bad { color:var(--status-serious) } .pill.bad i { background:var(--status-serious) }
+      .kv { display:inline-flex; gap:6px } .kv > span:first-child { color:var(--ink-muted) }
+      .kv.strong > span:last-child { font-weight:600 }
+      .linkbtn { background:none; border:0; padding:0; color:var(--accent); cursor:pointer; text-decoration:underline }
+      .runcard .actions { display:flex; gap:var(--space-s) }
+      .tabs { flex:none; display:flex; align-items:center; gap:2px; border-bottom:1px solid var(--rule);
+        overflow-x:auto; white-space:nowrap; font-size:var(--type-small) }
+      .tabs [role=tab] { padding:9px var(--space-m); background:none; border:0; border-bottom:2px solid transparent;
+        margin-bottom:-1px; color:var(--ink-secondary); cursor:pointer }
+      .tabs [role=tab][aria-selected="true"] { color:var(--ink-primary); font-weight:600; border-bottom-color:var(--accent) }
+      .tabs [role=tab].empty { color:var(--ink-muted) }
+      .tabs .pos { color:var(--ink-muted); font-size:var(--type-small); padding:0 var(--space-s) }
+      [role=tabpanel] { flex:1 1 auto; min-height:0; display:flex; flex-direction:column; gap:var(--space-s) }
+
+      /* --- Overview ------------------------------------------------------------------ */
+      .ov { position:relative; flex:1; min-height:0; display:flex; flex-direction:column; gap:var(--space-s) }
+      /* Before the first result the whole Overview is drawn empty, under one translucent
+         black box with white text that covers all of it (2026-11-13; the frames were asked
+         for from the start, 2026-11-12). A card that waits for reads says so
+         in words alone, in its frame. */
+      .ovwait { position:absolute; inset:0; z-index:2; border-radius:10px; background:var(--scrim);
+        color:var(--on-scrim); display:flex; flex-direction:column; align-items:center;
+        justify-content:center; gap:var(--space-xs); padding:var(--space-xl); text-align:center }
+      .ovwait b { font-size:var(--type-heading); font-weight:600 }
+      .ovwait small { font-size:var(--type-body) }
+      .ovcard { background:var(--surface-panel); border-radius:10px; padding:var(--space-m) var(--space-l) var(--space-s);
+        display:flex; flex-direction:column; gap:var(--space-xs); min-height:0; text-align:left;
+        color:var(--ink-primary); cursor:pointer }
+      .ovcard:hover { outline:1px solid var(--rule) }
+      /* A title and a value keep a line each; when both do not fit, the value moves under
+         the title rather than either breaking (Chromium check, 2026-11-12). */
+      .ovhead { display:flex; flex-wrap:wrap; align-items:baseline; gap:0 var(--space-s) }
+      .ovhead .h, .ovhead .hs, .uncorr { white-space:nowrap }
+      /* A value and its label wrap as one, to the right: "median" used to fall alone. */
+      .ovhead .hpair { margin-left:auto; white-space:nowrap; display:inline-flex; align-items:baseline; gap:var(--space-s) }
+      .ovhead .t { font-size:var(--type-heading); font-weight:600 }
+      .ovhead .h { font-size:var(--type-title); font-weight:600 }
+      .ovhead .hs { font-size:var(--type-small); color:var(--ink-secondary) }
+      .ovsub { display:flex; align-items:baseline; gap:var(--space-s); margin-bottom:var(--space-xs); min-width:0 }
+      /* One line, always (2026-11-13: the poly(A) card's wrapped). */
+      .ovline { font-size:var(--type-small); line-height:1.35; color:var(--ink-secondary);
+        white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0 }
+      .ovline b { color:var(--ink-primary) }
+      .uncorr { align-self:center; font-size:var(--type-small); color:var(--status-warning) }
+      .reads { flex:none; cursor:default }
+      .reads:hover { outline:0 }
+      /* The same space between every count, not equal columns: the counts differ in width,
+         and equal columns left uneven gaps between them (2026-11-09). */
+      .reads .nums { display:flex; justify-content:space-between; flex-wrap:wrap; gap:var(--space-s) var(--space-l) }
+      .reads .nums > div { display:flex; align-items:baseline; gap:var(--space-s); flex-wrap:wrap }
+      .reads .k { font-size:var(--type-small); color:var(--ink-secondary); display:inline-flex; align-items:center; gap:6px }
+      .reads .k i { width:10px; height:10px; border-radius:2px }
+      .reads .v { font-size:var(--type-title); font-weight:600; line-height:1.15 }
+      .reads small { font-size:var(--type-small); color:var(--ink-secondary) }
+      .mapbar { display:flex; gap:2px; height:8px }
+      .mapbar .m { background:var(--result-constructs); border-radius:4px 0 0 4px }
+      .mapbar .u { flex:1; background:var(--ink-muted); border-radius:0 4px 4px 0 }
+      .key-m { background:var(--result-constructs) } .key-u { background:var(--ink-muted) }
+      .ovrow { flex:1 1 0; min-height:190px; display:grid; grid-template-columns:repeat(3, minmax(0,1fr)); gap:var(--space-s) }
+      .plotbox { flex:1; min-height:0; position:relative; border-bottom:1px solid var(--ink-muted) }
+      /* The drawing starts below a band one line of the notes' text high: "√ count" and
+         "+N outside" sit in it, and no longer on the curve (2026-11-14). */
+      .plotbox svg { position:absolute; left:0; bottom:0; width:100%; height:calc(100% - var(--plot-band)) }
+      .plotbox .corner { position:absolute; top:0; left:4px; line-height:var(--plot-band); font-size:var(--type-micro); color:var(--ink-muted) }
+      /* "+N beyond", in the corner: on the line under the title it made the line wrap. */
+      .plotbox .beyond { position:absolute; top:0; right:4px; line-height:var(--plot-band); font-size:var(--type-micro); color:var(--ink-muted); white-space:nowrap }
+      .plotbox .waittext { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+        padding:0 var(--space-m); text-align:center; font-size:var(--type-body); color:var(--ink-secondary) }
+      .xt { position:relative; height:22px; padding-top:5px; font-size:var(--type-micro); color:var(--ink-muted) }
+      .xt span { position:absolute; white-space:nowrap }
+      /* Prefixed: Plotly's SVG has its own .line (each line of a title is tspan.line) and
+         .plot, and an unprefixed rule here once drew every chart title as blue outlines. */
+      .hx-area { fill:var(--mark); fill-opacity:var(--series-fill-alpha) }
+      .hx-line { fill:none; stroke:var(--mark); stroke-width:var(--series-line-width); vector-effect:non-scaling-stroke }
+      .hx-med { stroke:var(--ink-secondary); stroke-width:1.2px; stroke-dasharray:5 4; vector-effect:non-scaling-stroke }
+      /* Gridlines (2026-11-12: too few, hard to see): at each x tick of a histogram,
+         at every quarter of a per-construct chart, in the grid colour. */
+      .hx-grid { stroke:var(--grid); stroke-width:1px; vector-effect:non-scaling-stroke }
+      .cgrid { flex:1; min-height:0; display:grid; grid-template-columns:48px minmax(0,1fr); grid-template-rows:minmax(0,1fr) 60px;
+        margin-top:var(--space-m) }
+      .yt { position:relative } .yt span { position:absolute; right:8px; transform:translateY(50%);
+        font-size:var(--type-micro); color:var(--ink-muted); white-space:nowrap }
+      .cplot { position:relative; display:flex; border-bottom:1px solid var(--ink-muted) }
+      .cwait { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+        padding:0 var(--space-m); text-align:center; font-size:var(--type-body); color:var(--ink-secondary) }
+      /* One construct: the card's value, said, instead of one bar or one point. */
+      .tile { flex:1; min-height:0; position:relative; display:flex; flex-direction:column;
+        justify-content:center; gap:var(--space-xs); padding:var(--space-s) 0 }
+      .tile .tv { font-size:var(--type-title); font-weight:600; color:var(--ink-primary) }
+      .tile .ts { font-size:var(--type-small); color:var(--ink-secondary) }
+      .tile .tv::before { content:""; display:inline-block; width:10px; height:10px; border-radius:3px;
+        margin-right:var(--space-s); vertical-align:middle; background:var(--mark) }
+      .tile .waittext { font-size:var(--type-body); color:var(--ink-secondary) }
+      .health .t { font-size:var(--type-heading); font-weight:600 }
+      .cplot .gl { position:absolute; left:0; right:0; height:1px; background:var(--grid) }
+      .cplot > .col { flex:1; min-width:0; position:relative }
+      .cplot .stem { position:absolute; left:50%; bottom:0; width:1.5px; margin-left:-.75px; background:var(--mark) }
+      .cplot .cbar { position:absolute; left:18%; right:18%; bottom:0;
+        border:var(--series-line-width) solid var(--mark); border-bottom:0 }
+      /* The fill rule (figspec.FILL_ALPHA): the series colour at the fill alpha, drawn
+         under the outline, so no translucent colour is written out here. */
+      .cplot .cbar::before, .cplot .head.range::before { content:""; position:absolute; inset:0;
+        background:var(--mark); opacity:var(--series-fill-alpha) }
+      .cplot .head { position:absolute; left:50%; width:7px; height:7px; margin-left:-3.5px; margin-bottom:-3.5px;
+        border-radius:50%; border:1.5px solid var(--mark); background:var(--mark);
+        box-shadow:0 0 0 1.5px var(--surface-panel) }
+      .cplot .head.hollow { background:var(--surface-panel); margin-bottom:0 }
+      .cplot .head.range { width:12px; margin-left:-6px; margin-bottom:0; border-radius:2px;
+        background:transparent; min-height:6px }
+      .names { display:flex } .names span { flex:1; min-width:0; display:flex; justify-content:center; padding-top:5px }
+      .names b { writing-mode:vertical-rl; transform:rotate(180deg); font-weight:400; font-size:var(--type-micro);
+        color:var(--ink-secondary); white-space:nowrap }
+      .names.wait b { color:transparent }
+      .health { flex:none; cursor:pointer; flex-direction:row; flex-wrap:wrap; align-items:center; gap:var(--space-s) 28px; padding:10px var(--space-l) }
+      .health .hv { font-size:var(--type-small); color:var(--ink-secondary) } .health .hv b { color:var(--ink-primary) }
+
+      /* --- panels 2-8: construct table + one chosen chart --------------------------- */
+      .split { display:grid; grid-template-columns:minmax(0, 5fr) minmax(0, 7fr); gap:var(--space-m); align-items:start }
+      .split.identity, .split.full-length { grid-template-columns:minmax(0, 3fr) minmax(0, 8fr) }
+      .mainfig { display:flex; flex-direction:column; gap:var(--space-s); min-width:0 }
+      /* No sideways scroll: the table fits its column (a scrollbar that barely moved). */
+      .tablebox { max-height:calc(100vh - 300px); overflow-y:auto; overflow-x:hidden; background:var(--surface-panel); border-radius:10px }
+      .tablecol { display:flex; flex-direction:column; gap:var(--space-s); min-width:0 }
+      .tablenote { margin:0 var(--space-xs); font-size:var(--type-small); line-height:1.45; color:var(--ink-secondary) }
+      table { border-collapse:collapse; width:100% }
+      th, td { padding:6px var(--space-s); border-bottom:1px solid var(--rule); text-align:left; font-size:var(--type-small) }
+      th { color:var(--ink-secondary); font-weight:600; position:sticky; top:0; background:var(--surface-panel) }
+      /* A number never breaks across lines ("113–\n132" with the larger text, 2026-11-12). */
+      td.n, th.n { text-align:right; white-space:nowrap }
+      tbody tr.pick { cursor:pointer } tbody tr.pick:hover { background:var(--surface-raised) }
+      tbody tr[aria-selected="true"] { background:var(--surface-raised); box-shadow:inset 3px 0 0 var(--accent) }
+      tr.dimrow td { color:var(--ink-secondary) }
+      .iqr { display:block; position:relative; height:8px; width:100%; min-width:60px }
+      .iqr i { position:absolute; top:3px; height:2px; background:var(--result-polya) }
+      .iqr b { position:absolute; top:0; width:2px; height:8px; background:var(--ink-primary) }
+      .chartcard { background:var(--surface-panel); border-radius:10px; padding:var(--space-m) var(--space-l);
+        display:flex; flex-direction:column; gap:var(--space-xs); min-width:0 }
+      .charthead { display:flex; align-items:center; gap:var(--space-s); min-height:28px }
+      .charthead .ct { font-size:var(--type-heading); font-weight:600 }
+      /* The construct and Core's one-line detail, as page text (was Plotly's title). */
+      .chartsub { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px var(--space-m); min-height:20px }
+      .chartsub .cn { font-size:var(--type-body); font-weight:600 }
+      .chartsub .cd { font-size:var(--type-small); color:var(--ink-secondary) }
+      .seg { height:28px; padding:0 var(--space-m); background:transparent; border:1px solid var(--rule-strong);
+        color:var(--ink-secondary); cursor:pointer; font-size:var(--type-small) }
+      .seg:first-child { border-radius:6px 0 0 6px } .seg:last-child { border-radius:0 6px 6px 0 }
+      .seg + .seg { border-left:0 }
+      .seg[aria-pressed="true"], .seg[aria-checked="true"] { background:var(--surface-raised); color:var(--ink-primary); border-color:var(--ink-muted) }
+      /* Settings › Display: the theme, as one segmented control; the reference's file or
+         paste switch. */
+      .segs { display:inline-flex; align-self:flex-start }
+      .segs .seg { height:36px; padding:0 var(--space-l); font-size:var(--type-body) }
+      .fig { width:100%; height:340px }
+      .fig.tall { height:max(400px, calc(100vh - 380px)) }
+      .fig.nofig { display:flex; align-items:center; justify-content:center }
+      .charts { display:grid; grid-template-columns:repeat(auto-fit, minmax(460px, 1fr)); gap:var(--space-m); margin-top:var(--space-m) }
+      /* A panel's figures side by side in one window (2026-11-13: read length's three,
+         and the flow cell's six panels, ran past it). --cols is set per panel. */
+      .charts.fit { grid-template-columns:repeat(var(--cols, 3), minmax(0, 1fr)); margin-top:0 }
+      .charts.fit .fig { height:max(300px, calc(100vh - 420px)) }
+      .inst + .charts.fit { margin-top:var(--space-m) }
+      .inst + .charts.fit .fig { height:max(230px, calc(100vh - 655px)) }
+      .qstats { display:flex; flex-wrap:wrap; gap:var(--space-s) var(--space-2xl) }
+      .qstat { display:inline-flex; align-items:baseline; gap:var(--space-s); font-size:var(--type-body); color:var(--ink-secondary) }
+      .qstat b { font-size:var(--type-title); color:var(--ink-primary) }
+      .empty { padding:var(--space-xl); color:var(--ink-secondary); text-align:center }
+
+      /* Sequencing information (panel 8): the instrument blocks, restyled dark. */
+      .inst { display:grid; grid-template-columns:repeat(3,1fr); gap:var(--space-m) }
+      .inst-block { background:var(--surface-panel); color:var(--ink-primary); padding:var(--space-m) var(--space-l); border-radius:10px;
+        display:flex; flex-direction:column }
+      .inst-title { display:flex; align-items:baseline; justify-content:space-between; gap:var(--space-s);
+        font-size:var(--type-small); color:var(--ink-secondary) }
+      .inst-title b { font-size:var(--type-heading); color:var(--ink-primary) }
+      .inst-title b small { font-size:var(--type-micro); color:var(--ink-secondary); font-weight:400; margin-left:var(--space-xs) }
+      .inst-title b.na { font-size:var(--type-body); color:var(--ink-secondary) }
+      .inst-note { margin-top:var(--space-s); color:var(--ink-secondary); font-size:var(--type-micro); line-height:1.45 }
+      .inst-note b { color:var(--ink-primary) }
+      .inst-note .warn { display:block; margin-top:var(--space-xs) }
+      .inst-none { margin-top:var(--space-s); color:var(--ink-secondary); font-size:var(--type-small) }
+      /* Room between the reasons' rows (2026-11-13: 2 px apart). */
+      .inst table td { padding:var(--space-s) var(--space-s); font-size:var(--type-small) }
+      .sbar { display:flex; height:9px; margin:var(--space-s) 0; border-radius:5px; overflow:hidden; background:var(--rule) }
+      .sbar span { display:block; height:100% }
+      .key { display:flex; flex-wrap:wrap; gap:var(--space-2xs) var(--space-s); font-size:var(--type-micro); color:var(--ink-secondary) }
+      .key i { width:7px; height:7px; border-radius:2px; display:inline-block; margin-right:var(--space-xs) }
+      .st-strand { background:var(--state-strand) } .st-pore { background:var(--state-pore) }
+      .st-adapter { background:var(--state-adapter) } .st-unavailable { background:var(--state-unavailable) }
+      .st-other { background:var(--state-other) }
+      .hist { display:block; width:100%; height:120px; margin:var(--space-s) 0 var(--space-xs) }
+      .hist-foot { display:flex; justify-content:space-between; gap:var(--space-s); font-size:var(--type-micro); color:var(--ink-secondary) }
+
+      /* --- Help and About ------------------------------------------------------------ */
+      .helpdoc { display:flex; flex-direction:column; gap:var(--space-m) }
+      .helpdoc h2, .legal h2 { margin:0; font-size:var(--type-heading); font-weight:650 }
+      .helpdoc p, .legal p { margin:0; color:var(--ink-secondary); line-height:1.5 }
+      /* MinKNOW's folders, drawn as a tree: the level each run kind takes is in the accent. */
+      .tree { margin:0; padding:var(--space-m); background:var(--surface-page); border:1px solid var(--rule);
+        border-radius:8px; font-family:var(--font-mono); font-size:var(--type-micro); line-height:1.6;
+        color:var(--ink-secondary); overflow-x:auto }
+      .tree b { color:var(--accent); font-weight:600 }
+      /* Help's colour key. A swatch takes its result's colour the way a card does
+         ([data-result] sets --mark), so the key follows the theme and the palette. */
+      .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:6px;
+        background:var(--mark) }
+      .sw.serious { background:var(--status-serious) } .sw.caution { background:var(--status-warning) }
+      /* About: the MIT text, folded (it travels with every copy, MIT's one condition). */
+      .licencetext summary { cursor:pointer; color:var(--accent); font-size:var(--type-small) }
+      .licencetext pre { margin:var(--space-s) 0 0; white-space:pre-wrap; font-family:var(--font-mono);
+        font-size:var(--type-micro); line-height:1.5; color:var(--ink-secondary) }
+
+      /* A narrower window (the default is 1180 x 760): the Overview's titles and headline
+         values one step down, so each keeps its line and the charts keep their height. At
+         1180 every top card's header broke in two (Chromium check, 2026-11-12). */
+      @media (max-width: 1360px) {
+        .ovhead .t, .health .t { font-size:var(--type-body) }
+        .ovhead .h, .reads .v { font-size:var(--type-heading) }
+        .split.polya { grid-template-columns:minmax(0, 1fr) minmax(0, 1fr) }
+      }
+
+      #log { flex:1; margin:0; background:var(--surface-menu); color:var(--ink-primary); border:1px solid var(--rule);
+        border-radius:8px; padding:var(--space-m); white-space:pre-wrap; font-family:var(--font-mono);
+        font-size:var(--type-micro); overflow:auto }
+
+      dialog { background:var(--surface-panel); color:var(--ink-primary); border:1px solid var(--rule);
+        border-radius:14px; padding:var(--space-xl); box-shadow:0 18px 48px rgba(0, 0, 0, 0.45) }
+      dialog::backdrop { background:rgba(0, 0, 0, 0.5) }
+      dialog h2 { margin:0 0 var(--space-m); font-size:var(--type-heading); font-weight:650 }
+      #stopdlg { width:460px } #stopdlg h2 { color:var(--status-serious) }
+      #detailsdlg { width:640px }
+      .dlgfoot { display:flex; justify-content:flex-end; gap:10px; margin-top:var(--space-l) }
+    </style>
+    <!-- The same pinned bundle Core embeds in the report, served from public/ so the two
+         copies stay byte-identical (checked by test_plotly_bundle_contract). The cartesian
+         build has no WebGL context, so no spec may use a GL trace type.
+         Ordinary script, not defer: it must define Plotly before main.ts, which is a
+         deferred module and therefore runs after every parser-blocking script. -->
+    <script src="/plotly-cartesian-3.7.0.min.js"></script>
+    <script type="module" src="/src/main.ts" defer></script>
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="topbar">
+        <button class="iconbtn" id="menutoggle" aria-label="Collapse menu">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+        </button>
+        <div class="titles">
+          <span class="pagetitle" id="pagetitle">Start</span>
+        </div>
+        <span class="spacer"></span>
+        <button class="iconbtn" id="help" aria-label="Help">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.5 9.5a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .8-1 1.5V14M12 17.5v.01"/></svg>
+          <span class="lbl">Help</span>
+        </button>
+      </header>
+
+      <div class="frame">
+        <nav class="nav" id="mainnav" aria-label="Main">
+          <button data-page="start">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M10 8.5v7l6-3.5z"/></svg>
+            <span class="lbl">Start</span></button>
+          <button data-page="run">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z"/></svg>
+            <span class="lbl">Current run</span></button>
+          <button data-page="log">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14M5 12h14M5 18h9"/></svg>
+            <span class="lbl">Log</span></button>
+          <button data-page="device" data-opens="settings">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3.2"/><path d="M12 2.5v3M12 18.5v3M2.5 12h3M18.5 12h3M5.3 5.3l2.1 2.1M16.6 16.6l2.1 2.1M5.3 18.7l2.1-2.1M16.6 7.4l2.1-2.1"/></svg>
+            <span class="lbl">Settings</span>
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg></button>
+        </nav>
+        <nav class="nav" id="settingsnav" aria-label="Settings" hidden>
+          <button class="back" data-page="back">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
+            <span class="lbl">Back to main menu</span></button>
+          <button data-page="device">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H4zM9 20h6M12 16v4"/></svg>
+            <span class="lbl">Device</span></button>
+          <button data-page="display">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg>
+            <span class="lbl">Display</span></button>
+          <button data-page="about">
+            <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></svg>
+            <span class="lbl">About</span></button>
+        </nav>
+
+        <main>
+          <!-- Start: one card per run kind. Each card fixes Core's mode and the live flag,
+               so neither is a field any more. -->
+          <section class="page center" id="page-start" data-title="Start">
+            <div id="kindpick" class="page">
+              <h1>New QC run</h1>
+              <div class="kinds">
+                <button class="kind" data-kind="live">
+                  <span class="badge"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h3l2-6 4 12 3-9 2 3h4"/></svg></span>
+                  <b>Live run</b><span>While MinKNOW is sequencing</span></button>
+                <button class="kind" data-kind="pod5">
+                  <span class="badge"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16v12H4zM8 10v4M12 9v6M16 11v2"/></svg></span>
+                  <b>POD5 files</b><span>Basecall here, then QC</span></button>
+                <button class="kind" data-kind="bam">
+                  <span class="badge"><svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h6M9 17h6"/></svg></span>
+                  <b>BAM files</b><span>Already basecalled</span></button>
+              </div>
+            </div>
+
+            <!-- The start flow, one choice per screen (2026-11-12: the three-step form
+                 gave a first-time user too much at once). Every run field is inside
+                 #setupfields, so one switch locks them while a run is going. main.ts shows
+                 one data-step block at a time and builds the step bar for the card. -->
+            <form id="flow" class="page" hidden onsubmit="return false">
+              <div class="row">
+                <h1 id="flowtitle">BAM files</h1>
+              </div>
+              <p class="banner" id="devicebanner" hidden>Device is not set up.
+                <button type="button" id="todevice">Set it up</button></p>
+              <!-- The app's own interpreter was not found: the shell's message, which says
+                   where it looked. A packaged app carries one, so this is a broken copy
+                   or a run from source that was never staged. -->
+              <p class="banner" id="corebanner" hidden></p>
+              <ol class="steps" id="steps"></ol>
+              <fieldset id="setupfields" class="card">
+                <!-- Any level of a MinKNOW run will do: Core says which folder it reads
+                     (describe_input), how many inputs it holds, and lists the runs below. -->
+                <div data-step="input" class="field">
+                  <label for="input" id="inputlabel">BAM folder</label>
+                  <div class="row"><input id="input" placeholder="BAMs of basecalled reads, aligned or not; mRNAspect aligns them"
+                    /><button type="button" class="btn pick" data-pick="dir" data-for="input">Browse…</button
+                    ><button type="button" class="btn" id="findruns">Find MinKNOW runs</button></div>
+                  <p class="dim" id="rthint" hidden>Ends when MinKNOW ends the run.</p>
+                  <div id="inputinfo" aria-live="polite"></div>
+                </div>
+                <!-- A FASTA file, or the sequence pasted (2026-11-13). A pasted one is
+                     written beside the run's logs and given to Core as a file (start_qc). -->
+                <div data-step="reference" class="field">
+                  <label id="reflabel">Reference</label>
+                  <span class="segs" role="radiogroup" aria-labelledby="reflabel"><button type="button" class="seg" data-refmode="file" role="radio" aria-checked="true">FASTA file</button><button type="button" class="seg" data-refmode="paste" role="radio" aria-checked="false">Paste sequence</button></span>
+                  <div class="row" id="reffile"><input id="ref" aria-labelledby="reflabel" placeholder="your constructs' reference FASTA"
+                    /><button type="button" class="btn pick" data-pick="fasta" data-for="ref">Browse…</button></div>
+                  <div id="refpaste" hidden>
+                    <textarea id="reftext" aria-labelledby="reflabel" spellcheck="false" placeholder="&gt;construct_1&#10;AUGGCUAGC…&#10;&#10;One or more FASTA records, or one bare sequence"></textarea>
+                    <div class="row"><label for="refname">Name</label><input id="refname" placeholder="for a bare sequence: the construct's name" /></div>
+                  </div>
+                  <p class="dim" id="refhint">Required. A wrong construct maps ~0%.</p>
+                </div>
+                <div data-step="arm" class="field">
+                  <label id="armlabel">Modification</label>
+                  <div class="choices" role="radiogroup" aria-labelledby="armlabel">
+                    <label class="choice"><input type="radio" name="arm" id="m1psi" checked
+                      /><span><b>m1Ψ-substituted</b><small>every U is N1-methylpseudouridine</small></span></label>
+                    <label class="choice"><input type="radio" name="arm" id="armu"
+                      /><span><b>Canonical U</b><small>unmodified uridine</small></span></label>
+                  </div>
+                </div>
+                <div data-step="model" class="field" id="pod5only">
+                  <label for="model">Basecall model</label>
+                  <div class="row"><select id="model"><option value="">From the config</option></select><button type="button" class="btn pick" data-pick="model" data-for="model">Browse…</button></div>
+                  <p class="dim" id="modelhint">From the Device models folder, or Browse… for one model folder.</p>
+                </div>
+                <div data-step="sample" class="field">
+                  <label>Sample and batch</label>
+                  <div class="pairs">
+                    <label for="manufacturer">Manufacturer</label><input id="manufacturer" placeholder="optional" />
+                    <label for="product">Product</label><input id="product" placeholder="optional" />
+                    <label for="batchid">Batch / lot ID</label><input id="batchid" placeholder="optional" />
+                    <label for="sampleid">Sample ID</label><input id="sampleid" placeholder="optional" />
+                    <label for="mfgdate">Manufacture date</label><input id="mfgdate" placeholder="optional" />
+                    <label for="operator">Operator</label><input id="operator" placeholder="optional" />
+                  </div>
+                  <p class="dim">Optional. The report prints them as given.</p>
+                </div>
+                <div data-step="output" class="field">
+                  <label for="output">Output folder</label>
+                  <div class="row"><input id="output" placeholder="where reports are written"
+                    /><button type="button" class="btn pick" data-pick="dir" data-for="output">Browse…</button></div>
+                </div>
+                <div data-step="output" class="field">
+                  <label for="runname">Run name</label>
+                  <input id="runname" placeholder="blank = run_YYYYMMDD_HHMMSS" />
+                  <p class="dim" id="runnamehint">Same name continues that run.</p>
+                </div>
+                <div data-step="review" class="field">
+                  <label>Review</label>
+                  <dl class="review" id="review"></dl>
+                </div>
+                <div data-step="review" class="field">
+                  <label for="config">Load configuration</label>
+                  <div class="row"><input id="config" placeholder="optional run_config.yaml"
+                    /><button type="button" class="btn pick" data-pick="yaml" data-for="config">Browse…</button></div>
+                  <p class="dim" id="confighint"></p>
+                </div>
+              </fieldset>
+              <div class="flowfoot">
+                <button type="button" class="btn" id="back">Back</button>
+                <span class="spacer"></span>
+                <span class="missing" id="missing" hidden>* Missing required values</span>
+                <button type="button" class="btn primary" id="next">Continue</button>
+                <button type="button" class="btn primary" id="go" hidden>Start</button>
+              </div>
+              <p class="dim err" id="starterr" hidden></p>
+            </form>
+          </section>
+
+          <!-- Current run: the run card, the panel names, one panel at a time. -->
+          <section class="page" id="page-run" data-title="Current run" hidden>
+            <p class="empty" id="norun">No run yet. Start one from Start.</p>
+            <div class="runcard" id="runcard" hidden>
+              <div class="info">
+                <div class="rline">
+                  <span class="runname" id="runtitle"></span>
+                  <span class="pill" id="runpill"><i></i><span></span></span>
+                  <span id="runmeta" class="rline"></span>
+                </div>
+                <div class="rline" id="runfacts"></div>
+              </div>
+              <!-- "Stop analysis", not "Stop": a bare Stop read as stopping the sequencing
+                   (2026-11-12). The report and the folder carry an icon each and
+                   name what they open, so the two no longer read as one thing. -->
+              <div class="actions">
+                <button class="btn danger" id="stop" disabled>Stop analysis</button>
+                <button class="btn soft" id="openrep" disabled>
+                  <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h9l4 4v14H6zM14 3v5h5M9 13h6M9 17h6"/></svg>
+                  <span id="openreplabel">View PDF report</span></button>
+                <button class="btn" id="reveal" disabled>
+                  <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/></svg>
+                  <span id="reveallabel">Show in Finder</span></button>
+              </div>
+            </div>
+            <div class="tabs" role="tablist" aria-label="Panels" id="tabs"></div>
+            <div id="panels" class="page"></div>
+          </section>
+
+          <section class="page" id="page-log" data-title="Log" hidden>
+            <pre id="log"></pre>
+          </section>
+
+          <!-- Help (2026-11-12: the Help button opened About). Which folder each run
+               kind takes, what the Overview shows, what the colours mean
+               (2026-11-16), where the results go; one line each. -->
+          <section class="page center" id="page-help" data-title="Help" hidden>
+            <div class="helpdoc">
+              <h1>Help</h1>
+              <div class="card">
+                <h2>Which folder to choose</h2>
+                <p>MinKNOW writes each run into a folder of its own, three levels under its data folder (on a Mac, /Library/MinKNOW/data):</p>
+<pre class="tree">/Library/MinKNOW/data/
+└── my_experiment/
+    └── my_sample/
+        └── <b>20261112_1434_MN12345_FBA12345_1a2b3c4d/</b>    ← Live run
+            ├── <b>pod5/</b>                                   ← POD5 files
+            └── <b>bam_pass/</b>                               ← BAM files, if MinKNOW basecalled</pre>
+                <dl class="review">
+                  <dt>Live run</dt><dd>the run folder: the one that holds pod5/</dd>
+                  <dt>POD5 files</dt><dd>a folder that holds .pod5 files</dd>
+                  <dt>BAM files</dt><dd>a folder that holds .bam files, aligned or not</dd>
+                </dl>
+                <p>Any of these levels will do: mRNAspect finds the folder it reads, says how many files it holds, and lists the runs when there are several. <b>Find MinKNOW runs</b> looks in MinKNOW's data folder for you.</p>
+              </div>
+              <div class="card">
+                <h2>The Overview</h2>
+                <dl class="review">
+                  <dt>Reads</dt><dd>every read so far; mapped reads align to your reference</dd>
+                  <dt>Read length</dt><dd>the median; full length is the share of reads that reach the construct's 5' end, from its low to its high bound</dd>
+                  <dt>Poly(A) tail</dt><dd>the median and IQR, over the reads with a tail called</dd>
+                  <dt>Read quality</dt><dd>the basecaller's mean quality score per read: confidence in the call, not agreement with the reference</dd>
+                  <dt>Construct share</dt><dd>each construct's share of the reads</dd>
+                  <dt>Per-base identity</dt><dd>per construct, the share of base observations that carry the reference base</dd>
+                  <dt>Full length by construct</dt><dd>each construct's full-length share, from its low to its high bound</dd>
+                  <dt>Sequencing information</dt><dd>pore occupancy, read end reasons and voltage, from MinKNOW's run files</dd>
+                </dl>
+              </div>
+              <!-- The colour code per result type (figspec.RESULT_COLOURS) and the two
+                   statuses a reader meets. Each row is tied to the palette and to the
+                   cards' own titles by test_gui_help_about.py. -->
+              <div class="card" id="colourkey">
+                <h2>What the colours mean</h2>
+                <p>Each kind of result keeps one colour: on its Overview card, in its panel and in the report on screen.</p>
+                <dl class="review">
+                  <dt><i class="sw" data-result="read-length"></i>Blue</dt><dd>length: Read length, Full length by construct</dd>
+                  <dt><i class="sw" data-result="polya"></i>Violet</dt><dd>Poly(A) tail; where both are drawn, the corrected length is a second violet</dd>
+                  <dt><i class="sw" data-result="quality"></i>Teal</dt><dd>accuracy: Read quality, Per-base identity</dd>
+                  <dt><i class="sw" data-result="constructs"></i>Green</dt><dd>composition: Construct share, and the mapped reads</dd>
+                  <dt><i class="sw serious"></i>Red</dt><dd>something to check: a run that stopped or failed, an error, a flagged position on a figure</dd>
+                  <dt><i class="sw caution"></i>Amber</dt><dd>a caution, such as ⚠ uncorrected beside a poly(A) tail</dd>
+                </dl>
+                <p>Where one figure splits a result into parts (the channel states in Sequencing information, the error types in Per-base identity), the same four colours name the parts, and the key beside the figure says which. Nothing relies on colour alone. The PDF report prints in greys and patterns; only a flagged position keeps its red.</p>
+              </div>
+              <div class="card">
+                <h2>Where the results go</h2>
+                <p>Each run writes one folder inside the output folder.</p>
+                <dl class="review">
+                  <dt>report_run_end.pdf</dt><dd>the report, at the end of the run</dd>
+                  <dt>report_latest.html</dt><dd>the newest report, rewritten as the run goes</dd>
+                  <dt>qc_result.json</dt><dd>every number, machine-readable</dd>
+                  <dt>run.log</dt><dd>what the run did</dd>
+                </dl>
+              </div>
+              <p><button class="linkbtn" id="toabout">About mRNAspect</button></p>
+            </div>
+          </section>
+
+          <!-- Settings › Device (was This Mac): facts about this computer, saved by the
+               app and passed to Core as the first config layer. -->
+          <section class="page" id="page-device" data-title="Settings" hidden>
+            <h1>Device</h1>
+            <p class="dim">Not needed for BAM files.</p>
+            <div class="card narrow">
+              <div class="field">
+                <label for="server">Basecall server</label>
+                <div class="row"><input id="server" placeholder="…/bin/dorado_basecall_server"
+                  /><button type="button" class="btn pick" data-pick="file" data-for="server">Browse…</button></div>
+              </div>
+              <div class="field">
+                <label for="device">Processor</label>
+                <!-- The server's --device. Auto leaves it unset so the server picks. -->
+                <select id="device" class="short">
+                  <option value="">Auto</option>
+                  <option value="gpu" id="gpuopt">GPU</option>
+                  <option value="cpu">CPU</option>
+                </select>
+              </div>
+              <div class="field">
+                <label for="models">Models folder</label>
+                <div class="row"><input id="models" placeholder="the folder holding your model folders"
+                  /><button type="button" class="btn pick" data-pick="dir" data-for="models">Browse…</button></div>
+              </div>
+              <p class="dim" id="machinenote"></p>
+            </div>
+            <div class="row narrow endrow">
+              <button class="btn" id="skipdevice">Skip</button>
+              <button class="btn primary" id="savedevice">Save</button>
+            </div>
+          </section>
+
+          <!-- Settings › Display (was Appearance until 2026-11-13). Light was asked
+               for on 2026-11-12; dark stays the default. The choice is this
+               computer's, kept in its storage; the title bar follows it. -->
+          <section class="page" id="page-display" data-title="Settings" hidden>
+            <h1>Display</h1>
+            <div class="card narrow">
+              <div class="field">
+                <label id="themelabel">Theme</label>
+                <span class="segs" role="radiogroup" aria-labelledby="themelabel"><button class="seg" data-theme-choice="dark" role="radio" aria-checked="true">Dark</button><button class="seg" data-theme-choice="light" role="radio" aria-checked="false">Light</button></span>
+              </div>
+            </div>
+          </section>
+
+          <section class="page" id="page-about" data-title="Settings" hidden>
+            <h1>About</h1>
+            <div class="card narrow">
+              <dl class="review" id="about"></dl>
+            </div>
+            <!-- 2026-11-12: the copyright, that this is not ONT's software, and no
+                 promise that a result is right. The licence is Core's LICENSE, MIT
+                 (2026-11-13), printed in full because MIT asks that its notice travel with
+                 every copy; checked by test_gui_help_about.py. -->
+            <div class="card narrow legal">
+              <p id="copyright">Copyright © 2026 Qbiolab.</p>
+              <p id="licence">Licence: MIT. This licence covers mRNAspect; the software listed below keeps its own.</p>
+              <details class="licencetext"><summary>MIT License</summary>
+<pre>MIT License
+
+Copyright (c) 2026 Qbiolab
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.</pre></details>
+              <p>mRNAspect is independent software. It is not affiliated with, endorsed by or supported by Oxford Nanopore Technologies. Product names such as MinKNOW and Dorado belong to their owners.</p>
+              <p>mRNAspect is provided as is, without warranty of any kind. Its results are not guaranteed to be accurate or complete, and it is not a validated release test: confirm any result a decision rests on by an independent method.</p>
+            </div>
+            <div class="card narrow legal">
+              <h2>Third-party software</h2>
+              <dl class="review" id="notices">
+                <dt>Tauri 2</dt><dd>MIT or Apache-2.0: the app window, with the Rust crates it is built from</dd>
+                <dt>plotly.js 3.7.0</dt><dd>MIT: the charts</dd>
+                <dt>The Python environment</dt><dd>Python, numpy, pysam, matplotlib, WeasyPrint, minimap2, samtools and the libraries they use, each under its own licence</dd>
+              </dl>
+              <!-- Every package's licence and its text, in the file staging writes into
+                   the bundle (scripts/make_notices.py). -->
+              <p>The notices this app carries list every package, with its licence and that licence's text.</p>
+              <div class="row"><button class="btn" id="opennotices" type="button">Open the third-party notices</button></div>
+              <p class="err" id="noticeserr" hidden></p>
+              <p>mRNAspect does not include a basecaller: dorado-server (<code>dorado_basecall_server</code> and <code>ont_basecall_client</code>) and its models are Oxford Nanopore Technologies' software. You install them, and they are used under Oxford Nanopore Technologies' own terms.</p>
+            </div>
+          </section>
+        </main>
+      </div>
+    </div>
+
+    <dialog id="stopdlg" aria-labelledby="stoptitle">
+      <h2 id="stoptitle">Stop the analysis?</h2>
+      <p>mRNAspect finishes the current file, then writes the report.</p>
+      <p class="dim" id="stoplive" hidden>MinKNOW keeps sequencing: this stops only the analysis.</p>
+      <div class="dlgfoot">
+        <button class="btn" id="stopcancel">Cancel</button>
+        <button class="btn danger-fill" id="stopconfirm">Stop analysis</button>
+      </div>
+    </dialog>
+
+    <dialog id="detailsdlg" aria-labelledby="detailstitle">
+      <div class="row dlghead">
+        <h2 id="detailstitle">Run details</h2>
+        <button class="iconbtn" id="detailsclose" aria-label="Close">
+          <svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+      </div>
+      <dl class="review" id="details"></dl>
+    </dialog>
+  </body>
+</html>

@@ -1,0 +1,103 @@
+# CI for Core. Core is the only artifact this project ships, and until this file existed
+# its 740 checks ran wherever someone happened to remember to run them.
+#
+# Two platforms, not one. macOS is the deployment target (decided 2026-10-07) and Linux is
+# where the work is done; the lock solves both and resolves the same versions of
+# everything Core touches — minimap2 2.30, samtools 1.24, pysam 0.24.1, htslib 1.24. A
+# green Linux run says nothing about the platform the product runs on.
+#
+# But not both on every push. On a private repo a macOS minute counts as TEN against the
+# account's 3,000 included minutes a month: by 2026-10-22 the month stood at 2,701, and the
+# macOS job was ~83% of it (~48 counted minutes a push, against ~10 for everything else).
+# So Linux runs on every push to main; macOS runs on pull requests, weekly, and on demand
+# (Actions tab → CI → Run workflow). The cost of that: a macOS-only break can sit on main
+# for up to a week. A change that touches anything platform-specific — the wrappers, the
+# bundle, subprocess or path handling — goes through a PR, so macOS sees it before merge.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    # Markdown and docs/ are read by no test (checked 2026-10-22), and 15 of October's 46
+    # pushes changed nothing else. A push is skipped only if EVERY changed file matches.
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
+  schedule:
+    - cron: '0 0 * * 1'     # Monday 00:00 UTC (09:00 KST); runs on main
+  workflow_dispatch:
+
+concurrency:
+  # A newer push supersedes an older run on the same ref. The suite is minutes long and
+  # the old answer is about code nobody will ship. The event is part of the key so that a
+  # push does not cancel the weekly or a manual run — those are the only macOS runs main
+  # gets, and a cancelled one is a week without one.
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}
+  cancel-in-progress: true
+
+jobs:
+  lock:
+    # Separate and first: a pixi.toml edited without re-locking makes every other job
+    # test an environment that is not the one the lock describes, and it would pass.
+    name: lock is in sync
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          # Pinned, and the lock gate is why. setup-pixi installs the LATEST pixi by
+          # default, and a newer pixi rewrites the lock into a newer format before
+          # comparing: the first CI run reported "lock file not up-to-date with the
+          # workspace" from a lock that was byte-identical in content, having first
+          # logged "up-to-date but uses an older format (v6) ... upgrade to v7".
+          # A gate that fires on a tool upgrade instead of on lock drift teaches people
+          # to ignore it. Upgrading the lock format is a deliberate change, made by
+          # bumping this pin and re-locking — not something CI should do on its own.
+          pixi-version: v0.67.2
+          run-install: false
+      - run: pixi lock --check
+
+  test:
+    name: tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false      # a macOS-only failure is the interesting one; do not hide it
+      matrix:
+        # macos-14 is arm64, matching osx-arm64. Dropped on push only (see the header). A
+        # job-level `if:` cannot do this — it is evaluated before `matrix` exists — so the
+        # list itself is chosen by event: `a && b || c` is the expression language's
+        # ternary, safe here because a non-empty array is truthy.
+        os: ${{ github.event_name == 'push' && fromJSON('["ubuntu-latest"]') || fromJSON('["ubuntu-latest", "macos-14"]') }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: prefix-dev/setup-pixi@v0.8.1
+        with:
+          # Same pin as the lock job: one pixi across the workflow, so the environment
+          # the tests run in is the one the gate checked.
+          pixi-version: v0.67.2
+          # Install exactly what the lock says, and fail rather than re-solve: a CI run
+          # that quietly solves its own environment is not testing the shipped one.
+          frozen: true
+          cache: true
+
+      # Not optional. The tests import `mrnaspect` through the repo-root conftest's sys.path
+      # entry, so they pass without the package being installed at all — and
+      # test_console_scripts.py is what makes that absence loud. Skipping this step would
+      # turn that test into the only failure and make it look like a packaging bug.
+      - run: pixi run dev-install
+
+      - name: Run the suite
+        # Sharded, because almost all of the suite's cost is end-to-end tests waiting on
+        # subprocesses rather than computing. `pixi run test` remains the authority: if
+        # the two ever disagree the shard split is at fault, which the script says on
+        # failure. 4 shards to match a hosted runner's cores.
+        run: bash scripts/run_tests_sharded.sh .pytest_shards 4
+
+      - name: Shard logs on failure
+        if: failure()
+        run: |
+          for f in .pytest_shards/shard_*.log; do
+            echo "::group::$f"; tail -80 "$f"; echo "::endgroup::"
+          done

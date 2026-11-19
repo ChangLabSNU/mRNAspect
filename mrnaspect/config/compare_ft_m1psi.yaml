@@ -1,0 +1,18 @@
+# Fine-tuned side of a stock-vs-FT comparison. See compare_stock_m1psi.yaml for what the
+# pair is for.
+
+mode: pod5
+
+reference: /path/to/your/construct_ref.fasta   # <-- EDIT: the SAME reference as the stock side
+
+basecall:
+  # The released model, m1psi_tuned_v1: the exported folder qcrna_m1psi_v1_ov2500, not a
+  # raw checkpoint. Its reads name that folder in their RG, and the report names the
+  # released model. dorado-server 7.13.6 loads it.
+  model: /path/to/dorado-models/qcrna_m1psi_v1_ov2500   # <-- EDIT
+align:
+  minimap2_flags: "-ax map-ont -k 7 -w 5 --secondary=no -y"
+
+sample:
+  arm: m1psi
+  arms: {}

@@ -1,0 +1,151 @@
+# =============================================================================
+# mrnaspect — development environment
+# =============================================================================
+# This file is for DEVELOPING mrnaspect, not for shipping it. What ships is the wheel
+# described by pyproject.toml; this is the conda environment that provides the two
+# things a wheel cannot: non-Python binaries (minimap2, samtools) and a pysam built
+# as a matched pair with its htslib.
+#
+#     pixi install        # one-time
+#     pixi run dev-install
+#     pixi run test
+#
+# NOT here, because they cannot be: dorado-server and its models. The server lives in
+# ONT's proprietary bundle and models are downloaded by the user into no predictable
+# place, so mrnaspect discovers both at run time and refuses loudly when it cannot.
+# =============================================================================
+
+[workspace]
+name        = "mrnaspect"
+version     = "0.1.0"
+description = "Nanopore direct-RNA QC for mRNA therapeutics — the shippable core library"
+channels    = ["conda-forge", "bioconda"]
+# No win-64, and that is a finding rather than a preference: pysam has no win-64 conda
+# build (measured — `pixi add --platform win-64 pysam` finds no candidates) and pysam is
+# not optional here. Windows, if required, gets Linux through WSL2.
+#
+# osx-arm64 is a DEVELOPMENT platform, not a support claim. The GUI has to be built on a
+# machine with a display and a system webview, and this project's only such machine is a
+# MacBook; the Linux side is headless servers with no webkit2gtk and no root to
+# install one (measured 2026-09-21). Tauri needs no extra system deps on macOS — it uses
+# WKWebView — and pysam/minimap2/samtools all publish osx-arm64 builds, so the GUI and
+# Core can run side by side there with no transport between them. That "null transport"
+# configuration is the one the deployment note calls the common first step for all three
+# shipping routes (WSL2 / split / local Linux).
+#
+# CORRECTED 2026-10-22. This comment used to end: "What this does NOT mean: that macOS is
+# a supported deployment target. Shipping is Linux. In particular BAM mode is what runs
+# here — POD5 mode needs dorado-server, which is Linux-only and GPU-bound." Both halves
+# were wrong, and both were assumptions this repo had already measured against:
+#
+#   * macOS IS the deployment target (decided 2026-10-07). The shipped artifact is
+#     the Tauri .app, which bundles an environment built from this one.
+#   * dorado-server is NOT Linux-only. A Mac run on 2026-09-23 logged --
+#     "dorado-server: ready on 127.0.0.1:5555 after 5.0s (device metal)" -- basecalling
+#     7,143 reads. So POD5 mode runs here too.
+#
+# What is still true, and is a different statement: mRNAspect does not INFER the device from
+# the platform. "macOS means metal" was challenged as an assumption on 2026-10-05 and the
+# challenge was right, so `basecall.server.device` stays null and unguessed.
+platforms   = ["linux-64", "osx-arm64"]
+
+[dependencies]
+# Required — these are exactly pyproject's `dependencies`, verified by walking Core's
+# import graph with ast rather than by reading the file.
+python = ">=3.10"
+numpy  = "*"
+pysam  = "*"
+pyyaml = "*"
+
+# pyproject's `report` extra. Core degrades deliberately without them (it still writes
+# qc_result.json and says so in the log), but a normal install should have them.
+jinja2     = "*"
+weasyprint = ">=69.0,<70"
+# matplotlib-BASE, not matplotlib. The meta-package depends on pyside6, which pulls
+# qt6-main, libclang and libllvm: 186 MB packed (~280 MB unpacked) of GUI toolkit for a
+# process that calls `matplotlib.use("Agg")` before it draws anything and has no window.
+# That is a quarter of the environment, and the environment is what a shipped .app has to
+# carry. If a GUI backend is ever genuinely needed, add it deliberately — arriving as a
+# transitive dependency of a meta-package is how it got here.
+matplotlib-base = "*"
+
+# External binaries the wrappers orchestrate. conda is the only channel that can supply
+# these at all — they are not Python packages.
+#
+# minimap2 is PINNED, not floored. Solving this environment fresh on 2026-09-19 picked
+# 2.31-r1302, while the analysis environment that produces the paper's numbers is on 2.30-r1287
+# — the split had silently re-opened exactly the product-vs-analysis divergence that
+# removing a hardcoded ONT-bundle path closed a day earlier (that one was 2.28 vs 2.30).
+# The suite does NOT catch this: it runs the aligner in one abort test and never checks
+# its output, so `522 passed` says nothing about alignment. Aligner output feeds every
+# reported identity and error number, so the version moves only with a deliberate re-run.
+#
+# samtools/pysam/numpy are ranges because `pixi.lock` (committed beside this file) is what
+# actually pins the builds; the ranges are only the constraint used when the lock is
+# re-solved. minimap2 is the exception because a re-solve must not silently move it.
+minimap2 = "==2.30"
+samtools = ">=1.22"
+
+pytest = ">=9.1.1,<10"
+# TEST-ONLY. This is how test_sample_identity.py reads the rendered PDF back -- the only
+# way to check that what reaches a PRINTED page is what the template meant, rather than
+# checking the template and hoping. Nothing was declared at first, so the suite passed on
+# this machine (where a personal conda's pdfinfo happened to be on PATH) and failed
+# on BOTH CI runners from 2026-10-20 on: "FileNotFoundError: 'pdfinfo'".
+#
+# Was `poppler` until 2026-10-23, declared with a note saying it must NOT be swapped for a
+# Python reader because `pdftotext` extracts a two-column grid in PHYSICAL order and the
+# assertions were written against that property. **That note was wrong about this file.**
+# All four assertions are substring-on-page membership ("batch LOT-4471" not in t); none
+# reads an order. Measured rather than argued: three real report PDFs, 15 pages each, both
+# readers agree on the page count and on every one of the assertions, including the
+# negative one.
+#
+# So it is pypdf now, and the reason is licensing. poppler is GPL-2.0-or-later and 33 MB
+# of external binaries, and it was riding into `dist/bundle-env` -- the environment the
+# .app ships -- for a test. pypdf is BSD-3-Clause, pure Python and 3.3 MB. That removes a
+# copyleft distribution obligation the product had no use for.
+#
+# THE CONSTRAINT THE OLD NOTE WAS PROTECTING STILL HOLDS: pypdf extracts in content-stream
+# order, not physical order. Do not write a layout-order assertion against it. If one is
+# ever needed, it needs a reader that promises physical order -- and then that reader's
+# licence has to be looked at again before it reaches pixi.toml.
+pypdf = "*"
+# Both only to register this package into the env as an editable install (see
+# dev-install). setuptools is not optional: `--no-build-isolation` tells pip to use THIS
+# environment's build backend instead of downloading a throwaway one, so the backend has
+# to be here. It was missing when this file was written — inherited from the research
+# repo's task, where setuptools happens to be present for other reasons — and
+# `pixi run dev-install` failed with `Cannot import 'setuptools.build_meta'`.
+pip = "*"
+setuptools = ">=64"
+
+# If this machine holds recorded runs or released data that the MinKNOW mimic must never
+# be able to write into — not even with --mimic-allow-dirty — name them here. The mimic
+# already refuses any target that has content in it; this is the second, absolute tier.
+# Left commented BECAUSE a path here would be a shipped default that protects one machine.
+#
+# [activation.env]
+# QCRNA_PROTECTED_ROOTS = "/data/recorded_runs:/data/released"
+
+[tasks]
+test = "pytest tests/ mrnaspect/tests/ -v"
+# The same tests in 6 processes instead of 1: ~14m30s -> ~4m35s on a 72-core host.
+# Almost all of the suite's cost is end-to-end tests waiting on subprocesses, not
+# computation, so the cores are there. `test` stays the authority — if the two disagree,
+# the shard split is at fault. See the header of the script for why it splits by file.
+test-fast = "bash scripts/run_tests_sharded.sh"
+# No copy is made: a .pth file is written pointing at this checkout, so `import mrnaspect`
+# resolves from any directory and edits are live.
+#
+# `--no-deps` is not optional. Measured 2026-09-19: letting the
+# installer resolve dependencies replaced conda's pysam with a PyPI wheel, and conda ships
+# pysam as a matched pair with htslib — swapping it changes the BAM reader underneath
+# every reported number. conda is the sole provider of binaries; pip only registers the
+# package. `--no-build-isolation` reuses this env's setuptools.
+dev-install = "pip install -e . --no-deps --no-build-isolation"
+# RE-RUN dev-install after any `pixi install` that rebuilds the environment (a changed
+# lock, a new platform, `pixi clean`). A pip-installed package is not in the lock, so a
+# rebuild silently removes it — and the suite does NOT notice, because the tests import
+# `mrnaspect` through the repo-root conftest's sys.path entry rather than through the
+# install. `test_console_scripts.py` exists to make that failure loud.

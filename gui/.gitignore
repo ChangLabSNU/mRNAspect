@@ -1,0 +1,38 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# --- added when the GUI moved into this repo -------------------------------------
+# The Tauri target/ is routinely 1-5 GB. src-tauri/.gitignore already covers it where
+# it actually lives; these catch it at the gui/ root too, plus the bundles `tauri build`
+# produces. The accident being prevented is one `git add gui/` that stages gigabytes.
+target/
+gen/
+
+# Bundled applications and installers — build artifacts, not source.
+*.app
+*.dmg
+*.AppImage
+*.deb
+*.msi

@@ -1,0 +1,881 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  {#- Interim only: a meta refresh works on file://, where a JS poll is blocked. A page
+      with figures reloads by a timer instead (the script after them), which a reader's
+      press on a figure can stop: a reload would undo their zoom. #}
+  {%- if auto_refresh_seconds and not interactive %}
+  <meta http-equiv="refresh" content="{{ auto_refresh_seconds }}">
+  {%- endif %}
+  <title>{{ report_title }}</title>
+  <style>
+    {# Type scale and status colours are injected from figspec, not restated. #}
+{{ design_tokens }}
+    {# PDF page setup: WeasyPrint reads @page for size, margins and page counter. #}
+    @page {
+      size: A4;
+      margin: 18mm;
+      {# Sample identity on every page, so a page pulled out stays attributable. #}
+      {# Margin boxes inherit from the page, not the body: give them a font. #}
+      @bottom-left {
+        content: string(docid);
+        font-family: var(--font-sans);
+        font-size: var(--type-micro);
+        color: #666;
+      }
+      @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-family: var(--font-sans);
+        font-size: var(--type-small);
+        color: #666;
+      }
+    }
+
+    {# Off-canvas rather than display: none, which would set no string and leave the
+       footer empty. #}
+    .doc-id { string-set: docid content(); position: absolute; left: -9999px; top: 0; }
+
+    body {
+      font-family: var(--font-sans);
+      color: #222;
+      font-size: var(--type-body);
+      line-height: 1.4;
+      margin: 0;
+    }
+
+    .header {
+      border-bottom: 2px solid #000;
+      padding-bottom: 8mm;
+      margin-bottom: 8mm;
+    }
+    .header h1 {
+      margin: 0;
+      font-size: var(--type-title);
+      letter-spacing: 0.05em;
+    }
+    .header .subtitle {
+      font-size: var(--type-body);
+      color: #666;
+      margin-top: 2mm;
+    }
+
+    .section-title {
+      font-size: var(--type-section);
+      font-weight: 600;
+      margin-top: 6mm;
+      margin-bottom: 3mm;
+      border-bottom: 1px solid #999;
+      padding-bottom: 1mm;
+    }
+
+    {# Sample/batch metadata block: two-column key/value table #}
+    table.meta-block {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 6mm;
+    }
+    table.meta-block th, table.meta-block td {
+      text-align: left;
+      padding: 2mm 3mm;
+      vertical-align: top;
+      border: 1px solid #ccc;
+    }
+    table.meta-block th {
+      width: 35%;
+      font-weight: 600;
+      background: #f5f5f5;
+    }
+
+    {# Page 1 in print: the sample, then the run, each the page's width (2026-11-13:
+       side by side, the sample's table was too narrow), then every construct. #}
+    table.meta-block.run-box td { word-break: break-word; }
+    {# A summary: tighter rows than the tables it summarises, and its note kept with it. #}
+    table.results.glance th, table.results.glance td { padding: 1.2mm 2mm; }
+    .glance-note { break-before: avoid; page-break-before: avoid; }
+    table.results.glance col.g-name { width: 22%; }
+    table.results.glance col.g-num { width: 15.6%; }
+    {# Its cells align as every other table's do, left (2026-11-13). #}
+    .opens-page { break-before: page; page-break-before: always; }
+
+    {# Results table #}
+    table.results {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: var(--type-small);
+      {# Fixed layout: the columns, not the content, set the widths, so every results
+         table lines up. #}
+      table-layout: fixed;
+    }
+    table.results col.c-test   { width: 24%; }
+    table.results col.c-method { width: 50%; }
+    table.results col.c-result { width: 26%; }
+    table.results th, table.results td {
+      border: 1px solid #888;
+      padding: 2mm;
+      text-align: left;
+      vertical-align: top;
+    }
+    table.results th {
+      background: #eee;
+      font-weight: 600;
+    }
+    table.results td.value {
+      font-family: var(--font-mono);
+    }
+    {# A construct's flagged positions, under its results table. #}
+    {# Room before the next figure; the heading stays with the list's first line. #}
+    .flagged-block { margin: 0 0 6mm 0; }
+    .flagged-title {
+      font-size: var(--type-small);
+      font-weight: 600;
+      margin: 3mm 0 1.5mm 0;
+      break-after: avoid;
+      page-break-after: avoid;
+    }
+    .flagged-list {
+      font-family: var(--font-mono);
+      font-size: var(--type-small);
+      margin: 0;
+    }
+    .flagged-note {
+      font-size: var(--type-micro);
+      color: #555;
+      margin: 1.5mm 0 0 0;
+    }
+
+    {# Keep a figure and its label on one page. #}
+    .printed-figure {
+      margin: 6mm 0;
+      text-align: center;
+    }
+    .printed-figure img {
+      max-width: 100%;
+      height: auto;
+    }
+    .figure-caption {
+      font-size: var(--type-small);
+      color: #333;
+      margin-top: 2mm;
+      text-align: left;
+    }
+
+    {# The per-construct captions, said once. #}
+    dl.figure-key { margin: 0 0 6mm 0; font-size: var(--type-small); }
+    dl.figure-key dt { font-weight: 600; margin-top: 2mm; }
+    dl.figure-key dd { margin: 0 0 0 6mm; color: #333; }
+
+    {# A construct's heading inside the per-construct section. #}
+    .construct-figures { page-break-before: auto; margin-top: 5mm; }
+    {# Keep a heading with what it heads. #}
+    .section-title, .construct-figures-title { break-after: avoid; page-break-after: avoid; }
+    .construct-figures-title {
+      font-size: var(--type-heading);
+      font-weight: 600;
+      margin: 4mm 0 2mm;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 1mm;
+    }
+
+    .signoff {
+      margin-top: 12mm;
+      page-break-inside: avoid;
+    }
+    .signoff p {
+      margin: 0 0 4mm 0;
+    }
+    .signoff .signature-line {
+      border-top: 1px solid #000;
+      width: 70mm;
+      margin-top: 18mm;
+      padding-top: 1mm;
+      font-size: var(--type-small);
+    }
+    .signoff .meta-line {
+      margin-top: 6mm;
+      font-size: var(--type-small);
+    }
+
+    {# A command line is not prose: it must wrap anywhere and stay copy-pasteable. #}
+    .provenance-value {
+      font-family: var(--font-mono);
+      font-size: var(--type-micro);
+      word-break: break-all;
+    }
+    .footer-disclaimer {
+      margin-top: 8mm;
+      font-size: var(--type-micro);
+      color: #777;
+      border-top: 1px solid #ccc;
+      padding-top: 2mm;
+    }
+    {# Per-construct sections: keep a construct's table and figures together where
+       they fit. #}
+    .construct-block {
+      page-break-inside: avoid;
+      margin: 5mm 0 7mm 0;
+    }
+    .construct-title {
+      font-size: var(--type-heading);
+      font-weight: 600;
+      margin-bottom: 2mm;
+      padding: 1.5mm 3mm;
+      {# Ink on a panel in both media; the document is monochrome. #}
+      background: var(--surface-panel);
+      border-left: 4px solid var(--ink-primary);
+    }
+    .construct-notice {
+      margin: 0 0 2mm 0;
+      padding: 2mm 3mm;
+      border: 1px solid var(--status-warning);
+      border-left: 4px solid var(--status-warning);
+      background: var(--status-warning-surface);
+      color: var(--status-warning-ink);
+      font-size: var(--type-micro);
+    }
+    .section-note {
+      font-size: var(--type-small);
+      color: #555;
+      margin: 0 0 4mm 0;
+    }
+    .incomplete-banner {
+      background: var(--status-serious-surface);
+      border: 1px solid var(--status-serious);
+      border-left: 6px solid var(--status-serious);
+      color: var(--status-serious-ink);
+      padding: 10px 12px;
+      margin: 10px 0 16px;
+      font-size: var(--type-small);
+      line-height: 1.5;
+    }
+    .insufficient-banner {
+      margin: 16px 0;
+      padding: 12px 16px;
+      border: 1px solid var(--status-warning);
+      border-left: 5px solid var(--status-warning);
+      background: var(--status-warning-surface);
+      color: var(--status-warning-ink);
+      font-weight: bold;
+      border-radius: 3px;
+    }
+
+    {# ---------------------------------------------------------------------------
+       Screen only from here. WeasyPrint reads `print` and ignores `screen`, so these
+       rules style the browser view in the GUI's vocabulary without touching the PDF.
+       Every colour is a var(); greys the print rules set are restated.
+       --------------------------------------------------------------------------- #}
+    @media screen {
+      body {
+        max-width: 60rem;
+        margin: 0 auto;
+        font-size: var(--type-body);
+        line-height: 1.6;
+        color: var(--ink-primary);
+        background: var(--surface);
+        padding: var(--space-2xl) var(--space-l);
+      }
+      {# One centred column, set on the body itself: set as `body > *`, every block whose
+         own rule names a margin shorthand (.section-title, .section-note,
+         .construct-block) put its side margins back to 0 and sat flush left
+         (2026-11-13). #}
+      .header {
+        border-bottom: 1px solid var(--rule);
+        padding-bottom: var(--space-l);
+        margin-bottom: var(--space-xl);
+      }
+      .header h1 { font-size: var(--type-title); letter-spacing: 0; font-weight: 600; }
+      .header .subtitle { font-size: var(--type-small); color: var(--ink-secondary); }
+      .section-title {
+        {# Sentence case, as the GUI's headings and the PDF's are (2026-11-16): the
+           screen alone set these in capitals, after a GUI label that is long gone. #}
+        font-size: var(--type-heading);
+        letter-spacing: 0;
+        color: var(--ink-secondary);
+        font-weight: 600;
+        border-bottom: 1px solid var(--rule);
+        margin: var(--space-3xl) 0 var(--space-m);
+        padding-bottom: var(--space-xs);
+      }
+      .figure-group-title {
+        font-size: var(--type-heading);
+        font-weight: 600;
+        color: var(--ink-primary);
+        margin: var(--space-2xl) 0 var(--space-m);
+      }
+      {# Room between the last table and the first figure. #}
+      .interactive-section { margin-top: var(--space-3xl); }
+      .screen-scope {
+        margin-top: var(--space-3xl);
+        padding: var(--space-l);
+        background: var(--surface-panel);
+        border-radius: 6px;
+        font-size: var(--type-small);
+        color: var(--ink-secondary);
+      }
+      .screen-scope p { margin: 0 0 var(--space-s); }
+      .screen-scope p:last-child { margin-bottom: 0; }
+      {# Every table the same width, wherever it sits. #}
+      table { font-size: var(--type-small); width: 100%; }
+      {# Flush left throughout. #}
+      .header, .section-title, .figure-caption, .printed-figure,
+      .interactive-figure, .figure-group-title { text-align: left; }
+      {# Rules, not a grid: one hairline under each row, as in the GUI. #}
+      table.results th, table.results td, table.meta-block th, table.meta-block td {
+        border: 0;
+        border-bottom: 1px solid var(--rule);
+      }
+      table.results th, table.meta-block th { background: var(--surface-panel); }
+      .section-note { color: var(--ink-secondary); }
+      .flagged-note { color: var(--ink-secondary); }
+      {# Captions styled as GUI labels. #}
+      .figure-caption {
+        font-style: normal;
+        font-size: var(--type-small);
+        color: var(--ink-secondary);
+        margin-top: var(--space-s);
+      }
+      {# A figure's view control (Both / Corrected / Uncorrected): the GUI's segmented
+         buttons, right-aligned over the plot. #}
+      .plot-views { display: flex; justify-content: flex-end; margin-top: var(--space-s); }
+      .plot-views .seg {
+        height: 28px;
+        padding: 0 var(--space-m);
+        background: transparent;
+        border: 1px solid var(--rule-strong);
+        color: var(--ink-secondary);
+        cursor: pointer;
+        font: inherit;
+        font-size: var(--type-small);
+      }
+      .plot-views .seg:first-child { border-radius: 6px 0 0 6px; }
+      .plot-views .seg:last-child { border-radius: 0 6px 6px 0; }
+      .plot-views .seg + .seg { border-left: 0; }
+      .plot-views .seg[aria-pressed="true"] {
+        background: var(--surface-panel);
+        color: var(--ink-primary);
+        border-color: var(--ink-muted);
+      }
+      .footer-disclaimer { font-size: var(--type-small); color: var(--ink-secondary);
+        border-top-color: var(--rule); }
+      .refresh-note {
+        position: sticky; top: 0; z-index: 10;
+        margin: 0 0 var(--space-m); padding: var(--space-s) var(--space-m);
+        background: var(--surface-panel); border: 1px solid var(--rule-strong);
+        border-radius: 6px; font-size: var(--type-small); color: var(--ink-primary);
+      }
+      {# Nothing is hidden on screen: the HTML is the complete record and the PDF its
+         printable subset. The one exception follows. #}
+    }
+
+    {# Interactive figures are screen only: WeasyPrint runs no JavaScript, so a plotly
+       <div> would print empty. The static figures carry the PDF. #}
+    .interactive-section, .figures-section { margin-top: 28px; }
+    {# The figures begin on a new page after the signature. #}
+    .figures-section.first-figures { page-break-before: always; }
+    {# Two columns; dense figures span both. Figures are rendered at column width,
+       never scaled in CSS, so their text keeps its point size. #}
+    .figure-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 2mm 6mm;
+      align-items: start;
+    }
+    .printed-figure { margin: 0 0 4mm 0; page-break-inside: avoid; }
+    .printed-figure img { width: 100%; height: auto; }
+    .panel-label { font-size: var(--type-micro); color: #444; margin-top: 1mm; }
+    .interactive-figure { margin: var(--space-l) 0 var(--space-xl) 0; }
+    .interactive-figure .plot { width: 100%; height: 480px; }
+    .interactive-note {
+      font-size: var(--type-body); color: var(--ink-secondary);
+      margin: var(--space-2xs) 0 var(--space-s) 0;
+    }
+  </style>
+</head>
+<body>
+
+  {% if for_print %}<div class="doc-id">{{ page_identity }}</div>{% endif %}
+  <div class="header">
+    <h1>{{ report_title }}</h1>
+    {# The user's clock with its UTC offset, and how long after QC started
+       (2026-11-10); no elapsed time on a report resumed from a snapshot. #}
+    <div class="subtitle">Generated {{ generated_at }} by {{ product_name }}{% if elapsed %},
+      {{ elapsed }} after QC started{% endif %}</div>
+  </div>
+
+  {% if auto_refresh_seconds and interactive and not for_print %}
+  <p class="refresh-note" id="refresh-paused" hidden>This page has stopped updating
+    itself, so that the figure you are looking at keeps its zoom. Reload the page to see
+    the latest numbers.</p>
+  {% endif %}
+
+  {% if insufficient_notice %}
+  <div class="insufficient-banner">⚠ {{ insufficient_notice }}</div>
+  {% endif %}
+
+  {# Separate from the low-reads banner: a short run and a run that lost inputs are
+     different findings. #}
+  {% if incomplete_notice %}
+  <div class="incomplete-banner">⚠ {{ incomplete_notice }}</div>
+  {% endif %}
+
+  {# Two groups, never merged: what the user declared and what MinKNOW recorded. An
+     absent field gets no row. #}
+  {% macro sample_block() %}
+  <div class="section-title">Sample and batch</div>
+  {% if sample.declared %}
+  <table class="meta-block">
+    {% for row in sample.declared %}
+    <tr><th>{{ row.name }}</th><td>{{ row.value }}</td></tr>
+    {% endfor %}
+    <tr><th>Test date</th><td>{{ test_date }}</td></tr>
+  </table>
+  <p class="section-note">
+    Declared for this run. {{ product_name }} does not verify them: they are reported as given.</p>
+  {% else %}
+  <table class="meta-block">
+    <tr><th>Test date</th><td>{{ test_date }}</td></tr>
+  </table>
+  <p class="section-note">
+    <strong>No sample or batch details were supplied for this run.</strong> Nothing in
+    this report identifies the material it measures. Set them under <code>sample:</code>
+    in the run configuration, or with <code>--product</code> / <code>--batch-id</code> /
+    <code>--manufacturer</code> / <code>--operator</code>.
+  </p>
+  {% endif %}
+  {% endmacro %}
+
+  {# Print: the run under the sample, so page 1 says what was measured and how
+     (2026-11-10); stacked, each the page's width, since 2026-11-13 (beside the run,
+     the sample's table was too narrow). Provenance, at the end, keeps the full record. #}
+  {{ sample_block() }}
+  {% if for_print and run_box %}
+  <div class="section-title">Run</div>
+  <table class="meta-block run-box">
+    {% for row in run_box %}
+    <tr><th>{{ row.name }}</th><td>{{ row.value }}</td></tr>
+    {% endfor %}
+  </table>
+  {% endif %}
+
+  {% if sample.recorded %}
+  <div class="section-title">Recorded by the instrument</div>
+  <table class="meta-block">
+    {% for row in sample.recorded %}
+    <tr><th>{{ row.name }}</th><td>{{ row.value }}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="section-note">Read from MinKNOW&rsquo;s own run summary. Nobody typed these.</p>
+  {% endif %}
+
+  {# No criterion or status column while no acceptance criterion exists
+     (2026-11-09): the read minimum is in its own row's words, and the signoff and the
+     screen's scope note state that no criteria are set. #}
+  {# One results-table macro for the run and every construct, so their columns match. #}
+  {% macro results_table(rows) %}
+  <table class="results">
+    <colgroup>
+      <col class="c-test"><col class="c-method"><col class="c-result">
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Test</th>
+        <th>Method / specification</th>
+        <th>Result</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in rows %}
+      <tr>
+        <td>{{ m.name }}</td>
+        <td>{{ m.method }}</td>
+        <td class="value">{{ m.value }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endmacro %}
+
+  {# A construct's flagged positions: where its per-position figure marks them, from the
+     highest mismatch down. Printed under that figure (2026-11-06); the screen has
+     the figure's hover. At most 50 (2026-11-10; FLAGGED_PRINT_LIMIT), the
+     highest-mismatch ones. No thousands separator: the list is comma-separated. #}
+  {% macro flagged_list(f) %}
+  {% set rest = f.count - f.positions|length %}
+  <div class="flagged-block">
+  <div class="flagged-title">Flagged positions: {{ "{:,}".format(f.count) }} at mismatch
+    &ge; {{ "%g"|format(f.threshold) }}, depth &ge; {{ f.min_depth }}{% if rest > 0 %};
+    the {{ f.positions|length }} with the highest mismatch, highest first{% elif f.positions %},
+    highest mismatch first{% endif %}</div>
+  {% if f.positions %}
+  <p class="flagged-list">{{ f.positions|join(", ") }}</p>
+  {% if rest > 0 %}
+  <p class="flagged-note">The other {{ "{:,}".format(rest) }}, and every flagged position's
+    base counts, are in qc_result.json.</p>
+  {% endif %}
+  {% elif not f.positions_measured %}
+  <p class="flagged-note">No position reached depth {{ f.min_depth }}, so none could be
+    flagged.</p>
+  {% else %}
+  <p class="flagged-note">None of the {{ "{:,}".format(f.positions_measured) }} positions
+    at depth &ge; {{ f.min_depth }} reached the threshold.</p>
+  {% endif %}
+  </div>
+  {% endmacro %}
+
+  {# Print: every construct on page 1, its values copied from its own table below. #}
+  {% if for_print and glance %}
+  <div class="section-title">Results at a glance</div>
+  <table class="results glance">
+    <colgroup><col class="g-name"><col class="g-num"><col class="g-num"><col class="g-num">
+      <col class="g-num"><col class="g-num"></colgroup>
+    <thead><tr><th>Construct</th><th>Reads</th><th>Per-base identity</th>
+      <th>Poly(A), uncorrected</th><th>Poly(A), corrected</th><th>Flagged positions</th></tr></thead>
+    <tbody>
+      {% for g in glance %}
+      <tr><td>{{ g.name }}</td><td class="value">{{ g.reads }}</td>
+        <td class="value">{{ g.identity }}</td><td class="value">{{ g.polya_called }}</td>
+        <td class="value">{{ g.polya_corrected }}</td><td class="value">{{ g.flagged }}</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="section-note glance-note">One line per construct with at least
+    {{ "{:,}".format(min_reads_per_construct) }} reads, its values as in that
+    construct's own table further on. Poly(A): medians.
+    {% if flag_rule %}Flagged positions: mismatch &ge; {{ "%g"|format(flag_rule.threshold) }}
+    at depth &ge; {{ flag_rule.min_depth }}, each listed under that construct's per-position
+    figure.{% endif %}
+    {% if listed_constructs %}{{ listed_constructs|length }} construct{{ '' if
+    listed_constructs|length == 1 else 's' }} with fewer reads {{ 'is' if
+    listed_constructs|length == 1 else 'are' }} listed after the construct
+    tables.{% endif %}
+    {% if unassigned and unassigned.n_reads %}{{ "{:,}".format(unassigned.n_reads) }}
+    read{{ '' if unassigned.n_reads == 1 else 's' }} matched no construct.{% endif %}</p>
+  {% endif %}
+
+  <div class="section-title">Whole-run results</div>
+  {{ results_table(metrics) }}
+
+  {% if constructs or listed_constructs %}
+  {# Print: on a page of its own, so the heading is never left at the foot of one. #}
+  <div class="section-title{% if for_print %} opens-page{% endif %}">Per-construct results</div>
+  <p class="section-note">
+    {{ n_constructs_received }} reference construct{{ '' if n_constructs_received == 1 else 's' }}
+    received reads{% if not listed_constructs %}{% elif constructs %}:
+    the {{ constructs|length }} with at least {{ "{:,}".format(min_reads_per_construct) }}
+    reads {{ 'is' if constructs|length == 1 else 'are' }} reported below, and the
+    {{ listed_constructs|length }} with fewer {{ 'is' if listed_constructs|length == 1 else 'are' }}
+    listed at the end, without figures{% else %}, none as many as
+    {{ "{:,}".format(min_reads_per_construct) }}, so each is listed below, without
+    figures{% endif %}.
+    {% if unassigned and unassigned.n_reads %}
+      {{ "{:,}".format(unassigned.n_reads) }} read{{ '' if unassigned.n_reads == 1 else 's' }} matched no construct
+      ({{ "{:,}".format(unassigned.unmapped) }} unmapped,
+      {{ "{:,}".format(unassigned.off_reference) }} mapped off-reference).
+    {% endif %}
+  </p>
+
+  {% for c in constructs %}
+  <div class="construct-block">
+    <div class="construct-title">{{ c.name }} ({{ "{:,}".format(c.n_reads) }} reads)</div>
+    {% if c.notice %}
+    <div class="construct-notice">⚠ {{ c.notice }}</div>
+    {% endif %}
+    {{ results_table(c.rows) }}
+  </div>
+  {% endfor %}
+
+  {% if listed_constructs %}
+  {# One line per construct below the read threshold; its reads still count in the
+     whole-run numbers. #}
+  <div class="construct-block listed-block">
+    <div class="construct-title">Fewer than {{ "{:,}".format(min_reads_per_construct) }}
+    reads</div>
+    <table class="results listed">
+      <thead><tr><th>Construct</th><th>Assigned reads</th><th>MAPQ 0</th></tr></thead>
+      <tbody>
+        {% for c in listed_constructs %}
+        <tr><td>{{ c.name }}</td><td class="value">{{ "{:,}".format(c.n_reads) }}</td>
+            <td class="value">{{ c.mapq0 }}</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if not for_print and figures_in_latest %}
+  <p class="section-note">
+    This numbered copy of an interim report keeps no figures, so that each stays small.
+    <code>report_latest.html</code>, the page that updates itself during the run, draws
+    them, and so does the final report. Every distribution behind them is already in
+    <code>qc_result.json</code>.
+  </p>
+  {% endif %}
+  {% endif %}
+
+  {% if run_provenance %}
+  {% endif %}
+
+  {# Print only: on screen a signature line is unusable, and the screen states the
+     scope and the review requirement elsewhere. #}
+  {% if for_print %}
+  <div class="section-title">Signoff</div>
+  <div class="signoff">
+    <p>This report has been prepared by {{ product_name }} based on direct RNA sequencing data
+    acquired from the sample identified above. It states what was measured, not whether
+    the sample conforms: with no acceptance criteria set, it is <strong>not a certificate
+    of analysis</strong>. Results are subject to QC manager review and do not constitute
+    a release decision until signed.</p>
+    {% if signoff_scope %}
+    <p><strong>{{ signoff_scope.lead }}</strong> {{ signoff_scope.detail }}</p>
+    {% endif %}
+
+    {# States that the figures after the signature are part of what is signed. #}
+    {% if figures_are_signed %}
+    <p>The figures {{ "on the following pages" if for_print else "below" }} are part of
+    this report. The tables above summarise them; they are not an appendix.</p>
+    {% endif %}
+
+    <div class="signature-line">Signature</div>
+    <div class="meta-line">
+      <strong>{{ signatory_title }}</strong>: ________________________________
+      &nbsp;&nbsp;&nbsp; Date: _________________
+    </div>
+  </div>
+  {% endif %}
+
+  {# One figure section for both media: a dropdown on screen, one figure per option
+     on paper. #}
+  {% if for_print %}
+  {# Grouped by construct, not by figure type, as the screen's selector is. #}
+  {# ``flagged`` (a construct's block only) prints its flagged positions right under
+     its per-position figure. #}
+  {% macro figure_bands(bands, suffix, flagged=none) %}
+    {# Full-width figures leave the grid instead of spanning it: in WeasyPrint a
+       spanning item collapses the grid's track sizing. #}
+    {% for band in bands %}
+    {% if band.full_width %}
+      {% for item in band.figures %}
+      <div class="printed-figure">
+        <div class="figure-caption"><strong>{{ item.title }}.</strong>{% if item.caption %}
+          {{ item.caption }}{% endif %}</div>
+        <img src="{{ item.panel.url }}" alt="{{ item.title }}{{ suffix }}">
+        {% if item.panel.detail %}
+        <div class="panel-label">{{ item.panel.detail }}</div>
+        {% endif %}
+      </div>
+      {% if flagged and item.id == "per-position" %}{{ flagged_list(flagged) }}{% endif %}
+      {% endfor %}
+    {% else %}
+      <div class="figure-grid">
+        {% for item in band.figures %}
+        <div class="printed-figure">
+          <div class="figure-caption"><strong>{{ item.title }}.</strong>{% if item.caption %}
+            {{ item.caption }}{% endif %}</div>
+          <img src="{{ item.panel.url }}" alt="{{ item.title }}{{ suffix }}">
+          {% if item.panel.detail %}
+          <div class="panel-label">{{ item.panel.detail }}</div>
+          {% endif %}
+        </div>
+        {% endfor %}
+      </div>
+    {% endif %}
+    {% endfor %}
+  {% endmacro %}
+
+  {# Grouped by construct, not by figure type, as the screen's selector is. #}
+  {% for g in print_sections.before %}
+  <div class="figures-section{% if loop.first %} first-figures{% endif %}">
+    <div class="section-title">{{ g.name }}</div>
+    {{ figure_bands(g.bands, "") }}
+  </div>
+  {% endfor %}
+
+  {% if print_sections.constructs %}
+  <div class="figures-section{% if not print_sections.before %} first-figures{% endif %}">
+    <div class="section-title">{{ print_sections.per_construct_heading }}</div>
+    {% if print_sections.construct_key %}
+    {# Captions once: the same figures repeat for every construct. #}
+    <p class="section-note">The same figures are drawn for each construct below. What
+    each one shows:</p>
+    <dl class="figure-key">
+      {% for k in print_sections.construct_key %}
+      <dt>{{ k.title }}</dt>
+      <dd>{{ k.caption }}</dd>
+      {% endfor %}
+    </dl>
+    {% endif %}
+    {% for sec in print_sections.constructs %}
+    <div class="construct-figures">
+      <div class="construct-figures-title">{{ sec.name }}</div>
+      {{ figure_bands(sec.bands, ", " ~ sec.name, sec.flagged) }}
+      {% if sec.flagged and not sec.has_per_position %}{{ flagged_list(sec.flagged) }}{% endif %}
+    </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% for g in print_sections.after %}
+  <div class="figures-section">
+    <div class="section-title">{{ g.name }}</div>
+    {{ figure_bands(g.bands, "") }}
+  </div>
+  {% endfor %}
+  {% else %}
+  {% if interactive %}
+  <div class="interactive-section">
+    <div class="section-title">Figures</div>
+    <p class="interactive-note">
+      Hover for values, drag to zoom, and use the construct selector where one is offered.
+    </p>
+    {# Grouped as in the PDF and the GUI. #}
+    {% for key, heading in figure_sections %}
+    {% set group = interactive | selectattr("section", "equalto", key) | list %}
+    {% if group %}
+    <div class="figure-group">
+      <div class="figure-group-title">{{ heading }}</div>
+      {% for f in group %}
+      <div class="interactive-figure">
+        <div class="figure-caption"><strong>{{ f.title }}.</strong>{% if f.caption %}
+          {{ f.caption }}{% endif %}</div>
+        <div class="plot" id="plot-{{ f.id }}"></div>
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+    {% endfor %}
+  </div>
+  {# `| safe`: autoescaping would break the vendored plotly source. Safe because a
+       test pins its sha256 and it holds no closing script tag. #}
+  <script>{{ plotly_js | safe }}</script>
+  <script>
+    {# Embedded, not linked, so the report works as a single file. #}
+    (function () {
+      {# Pre-escaped by `_json_for_script`: autoescape would break it, and `| safe`
+         alone would let a reference name close this tag. #}
+      var figures = {{ interactive_json | safe }};
+      figures.forEach(function (f) {
+        var el = document.getElementById('plot-' + f.id);
+        if (!el) { return; }
+        var menus = f.spec.layout.updatemenus || [];
+        var views = menus.filter(function (m) { return m.type === 'buttons'; });
+        if (!views.length) {
+          Plotly.newPlot(el, f.spec.data, f.spec.layout, f.spec.config);
+          return;
+        }
+        {# A view control (Both / Corrected / Uncorrected) is drawn on the page, as in the
+           GUI. Core's copy restyles opacity, which in a browser changed the legend but
+           left the trace drawn (2026-11-05). The construct selector stays plotly's. #}
+        var layout = Object.assign({}, f.spec.layout, {
+          updatemenus: menus.map(function (m) {
+            return m.type === 'buttons' ? Object.assign({}, m, { visible: false }) : m;
+          })
+        });
+        Plotly.newPlot(el, f.spec.data, layout, f.spec.config);
+        drawViews(el, f.spec.data, views);
+      });
+
+      {# Shown = the selector's construct AND the chosen view, recombined on every change
+         so neither control undoes the other: the GUI's applyVisibility (gui/src/main.ts),
+         on the same button args. #}
+      function drawViews(el, data, views) {
+        var construct = data.map(function (t) { return t.visible !== false; });
+        var view = null;
+        function apply() {
+          var upd = { visible: construct.map(function (on, i) {
+            return on && (view && view.opacity ? Number(view.opacity[i]) > 0 : true);
+          }) };
+          if (view && view.hoverinfo) { upd.hoverinfo = view.hoverinfo; }
+          if (view && view.showlegend) { upd.showlegend = view.showlegend; }
+          Plotly.restyle(el, upd);
+        }
+        {# Plotly applies a selector choice, then emits the button it ran. #}
+        el.on('plotly_buttonclicked', function (e) {
+          var args = (e && e.button && e.button.args) || [];
+          if (args[0] && Array.isArray(args[0].visible)) {
+            construct = args[0].visible.slice();
+            apply();
+          }
+        });
+        views.forEach(function (m) {
+          var bar = document.createElement('div');
+          bar.className = 'plot-views';
+          (m.buttons || []).forEach(function (b, bi) {
+            var btn = document.createElement('button');
+            btn.type = 'button';
+            btn.className = 'seg';
+            btn.textContent = b.label;
+            btn.setAttribute('aria-pressed', String(bi === (m.active || 0)));
+            btn.addEventListener('click', function () {
+              view = (b.args || [])[0] || null;
+              apply();
+              Array.prototype.forEach.call(bar.children, function (o) {
+                o.setAttribute('aria-pressed', String(o === btn));
+              });
+            });
+            bar.appendChild(btn);
+          });
+          el.parentNode.insertBefore(bar, el);
+        });
+      }
+    })();
+  </script>
+  {% if auto_refresh_seconds %}
+  <script>
+    {# An interim with figures reloads itself on a timer. A reload redraws every figure
+       from the start, so the first press on one (a zoom, a legend click, a view button)
+       stops the timer and the note at the top says so. Hovering does not. #}
+    (function () {
+      var timer = setTimeout(function () { location.reload(); },
+                             {{ auto_refresh_seconds | int }} * 1000);
+      function stop() {
+        if (timer === null) { return; }
+        clearTimeout(timer);
+        timer = null;
+        var note = document.getElementById('refresh-paused');
+        if (note) { note.hidden = false; }
+      }
+      Array.prototype.forEach.call(document.querySelectorAll('.interactive-figure'),
+        function (fig) {
+          fig.addEventListener('mousedown', stop);
+          fig.addEventListener('touchstart', stop);
+        });
+    })();
+  </script>
+  {% endif %}
+  {% endif %}
+  {% endif %}
+
+  {# Last, in both media: a reference section. #}
+  <div class="section-title">Provenance</div>
+  <table class="meta-block">
+    {% for row in run_provenance %}
+    <tr><th>{{ row.name }}</th><td class="provenance-value">{{ row.value }}</td></tr>
+    {% endfor %}
+  </table>
+  <p class="section-note">
+    The complete record (every input file, the full effective configuration, the
+    external tool versions and a hash of every {{ product_name }} module that was loaded) is in
+    <code>qc_result.json</code> under <code>provenance</code>.
+  </p>
+
+  {# The screen's version of the signoff, without the signature line. #}
+  {% if not for_print %}
+  <div class="screen-scope">
+    <p>This report states what was measured, not whether the sample conforms: with no
+    acceptance criteria set, it is <strong>not a certificate of analysis</strong>.
+    Results are subject to QC manager review and do not constitute a release decision
+    until signed. The printed version carries the signature block.</p>
+    {% if signoff_scope %}
+    <p><strong>{{ signoff_scope.lead }}</strong> {{ signoff_scope.detail }}</p>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="footer-disclaimer">
+    Generated by {{ product_name }}. Not for regulatory submission without independent QC review.
+    Tests not performed by {{ product_name }} (e.g., dsRNA contamination, residual DNA, endotoxin)
+    require complementary assays.
+  </div>
+
+</body>
+</html>

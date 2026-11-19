@@ -1,0 +1,110 @@
+# mRNAspect run configuration.
+#
+# Precedence: built-in defaults < this file < CLI flags. The effective merged config is
+# recorded in qc_result.json provenance. Unchanged, this file behaves as the CLI defaults.
+# Why each value is what it is: docs/config_reference.md.
+
+# REQUIRED. No default: a valid FASTA of the WRONG construct maps 0.00% and reads as a
+# dead flow cell, so the run refuses rather than guesses.
+reference: null
+
+input_dir: null            # where to read. CLI --input-dir wins.
+output_dir: null           # where to write. CLI --output-dir wins.
+output_name: null          # run directory name; must be a single name, not a path.
+
+mode: bam                  # bam | pod5. bam: BAMs of basecalled reads, aligned or not;
+                           # both modes align with align.minimap2_flags
+min_reads: 1000            # mapped reads below which the report says it cannot diagnose
+min_reads_per_construct: 100  # fewer assigned reads: the construct is listed, not given a section
+on_error: skip             # skip | raise — what one unreadable input does to the run
+
+basecall:                  # pod5 mode only
+  model: null              # REQUIRED in pod5 mode. Path to the dorado model folder.
+  emit_moves: false        # true: also write the move table (mv tag) for signal tools
+  server:
+    auto_start: true
+    # null: $DORADO_SERVER / $DORADO_CLIENT, else PATH; the client is also looked for
+    # beside the server binary (ONT ships both in one bin/).
+    binary: null           # dorado_basecall_server
+    client: null           # ont_basecall_client
+    host: 127.0.0.1
+    port: 5555
+    # null: $DORADO_DEVICE, else n_devices idle GPUs picked from nvidia-smi.
+    device: null           # cuda:0 | metal | ... Never inferred from the platform.
+    n_devices: 1
+    min_free_gpus_remaining: 0   # leave this many GPUs untouched for other users
+    free_gpu_mib: 1024           # a GPU using more than this (MiB) counts as busy
+    log_dir: null                # server logs; <run dir>/dorado_server when null
+    startup_timeout_s: 120
+    stop_timeout_s: 20
+
+align:
+  # k7 w5 suits the short m1Ψ constructs, and the poly(A) correction's delta_pct term
+  # assumes -k7 -w5 --secondary=no. Both modes stop if -a (SAM output) or -y (carries the
+  # basecaller tags, including pt, into the SAM) is missing.
+  minimap2_flags: "-ax map-ont -k7 -w5 --secondary=no -y"
+  threads: null              # minimap2 -t; null: every CPU this process may use
+
+# Not read by the pipeline: the modules that run are MODULES in mrnaspect/main.py.
+modules: [run_summary, polya, consensus, error_hotspot, mapq]
+
+# module_params: per-module settings, absent by default -- each module then uses its own.
+# A key a module does not have is refused, not ignored. Which ones are meant to be changed,
+# and why the rest are not: docs/config_reference.md, "module_params". For example:
+#   module_params:
+#     consensus:
+#       mismatch_threshold: 0.5        # flag a position when this share of its reads
+#                                      # or more does not carry the reference base
+#     terminal_reach:
+#       full_length_5p_max_short_nt: 50  # full length = alignment starts this close to 5'
+#     polya:
+#       target_length: 120             # the designed tail (nt)
+#       short_fraction: 0.8            # short = below target x this; with a target, enables
+#                                      # the short-tail rate (no default; or short_threshold)
+#       target_lengths: {construct_B: 90}  # per construct, in place of target_length
+
+cadence:
+  interim_every_n: 1       # 0 = off; N = an interim QC report every N inputs
+  interim_interval_s: null # optional wall-clock cadence; nondeterministic
+
+durability:
+  latest_snapshot: true    # atomic latest_snapshot.json per input, for crash recovery
+
+analysis:
+  # A resource ceiling, not a methodological param. Each construct allocates
+  # O(ref_length) pileup arrays; exceeding this raises rather than tracking the first N.
+  max_constructs: 64
+
+# What a PERSON declares. None of it is verifiable here, which is why the report prints
+# it apart from what MinKNOW recorded. An unset field gets no row.
+sample:
+  manufacturer: null
+  product: null
+  batch_id: null
+  sample_id: null
+  manufacture_date: null
+  operator: null
+  # 'm1psi' (fully m1Ψ-substituted) or 'U' (canonical). No BAM records it. Undeclared
+  # withholds the poly(A) ruler correction. `arm` covers every construct; `arms` names
+  # exceptions and states their value. An `arms` name absent from the reference refuses
+  # the run.
+  arm: null
+  arms: {}                 # e.g. {construct_B: U}
+
+# Real-time driver only; ignored offline.
+realtime:
+  poll_interval_s: 5.0
+  stable_polls: 7          # consecutive unchanged polls before a POD5 is called complete
+  progress_interval_s: 30.0
+  pod5_subdir: pod5        # subdirectory of the run dir MinKNOW writes POD5 into
+  run_end_glob: "final_summary_*.txt"   # MinKNOW's own end-of-run marker
+  seal_budget_s: 600       # how long to keep waiting for stragglers after that marker
+  seal_poll_interval_s: 2.0
+  seal_stable_polls: 3
+  interim_every_n: 1
+  # Decimation under load. 0 = off (the default): every POD5 is processed. When set, a
+  # queue at least this deep drops to every Nth input by index — stride, not random.
+  max_queue_depth: 0
+  backpressure_resume_fraction: 0.5
+  backpressure_max_stride: 16
+  quiescence_warn_s: 900   # warn when no new input has appeared for this long
