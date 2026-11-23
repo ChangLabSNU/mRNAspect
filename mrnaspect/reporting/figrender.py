@@ -725,10 +725,16 @@ def _y_axes(layout: Mapping[str, Any]) -> tuple[list[tuple[str, str]], list[floa
 
 def draw_panel(traces: Sequence[Mapping[str, Any]], layout: Mapping[str, Any], *,
                theme: Theme = SCREEN, figsize: tuple[float, float] = PANEL_SIZE,
-               dpi: int = PANEL_DPI):
+               dpi: int = PANEL_DPI, legend: str = "right"):
     """Draw one panel and return its matplotlib ``(figure, axes)``.
 
     Separate from :func:`render_spec` so tests can check the artists, not pixels.
+
+    ``legend`` is where the legend goes, outside the plot either way: ``"right"``, as
+    plotly does, or ``"top"``, above the plot in one row, for a panel too narrow to give
+    a column of labels its width (the PDF's two-column figures: on the right the legend
+    took about half of a 3.3 in panel, and the poly(A) plot was drawn half as wide as the
+    others, 2026-11-23).
 
     Raises:
         ValueError: on a trace type this renderer does not know. figspec is held to the
@@ -812,17 +818,21 @@ def draw_panel(traces: Sequence[Mapping[str, Any]], layout: Mapping[str, Any], *
     labels = [t for t in names if t]
     # As in plotly, an unset showlegend means show; drawn for two or more labels.
     if layout.get("showlegend") is not False and len(set(labels)) > 1:
-        # Outside the plot on the right, plotly's default, so it never covers a mark.
+        # Outside the plot, so it never covers a mark: on the right, plotly's default, or
+        # above it in rows of up to three for a narrow panel (`legend="top"`).
         # `loc="best"` can land on the data and is slow on panels with many bars.
         legend_font = (layout.get("legend") or {}).get("font") or {}
         # A filled series' swatch is its fill and line overlaid, as plotly draws it; in
         # print the lines alone cannot tell two filled series apart.
-        legend = ax.legend(
+        place = ({"loc": "lower left", "bbox_to_anchor": (0.0, 1.02), "ncol": min(len(names), 3),
+                  "columnspacing": 1.2, "handlelength": 1.6}
+                 if legend == "top" else
+                 {"loc": "upper left", "bbox_to_anchor": (1.01, 1.0)})
+        legend_artist = ax.legend(
             [(swatches[h], h) if h in swatches else h for h in handles], names,
             fontsize=float(legend_font.get("size") or 11) * _FONT_PT_PER_SPEC_UNIT,
-            loc="upper left", bbox_to_anchor=(1.01, 1.0), frameon=False,
-            borderaxespad=0.0)
-        for text in legend.get_texts():
+            frameon=False, borderaxespad=0.0, **place)
+        for text in legend_artist.get_texts():
             text.set_color(theme(legend_font.get("color")) or colour)
             text.set_fontfamily(families)
     return fig, ax
@@ -830,15 +840,17 @@ def draw_panel(traces: Sequence[Mapping[str, Any]], layout: Mapping[str, Any], *
 
 def render_spec(spec: Mapping[str, Any], *, theme: Theme = SCREEN,
                 figsize: tuple[float, float] = PANEL_SIZE,
-                dpi: int = PANEL_DPI) -> list[Panel]:
-    """Render a figspec to one SVG per dropdown option."""
+                dpi: int = PANEL_DPI, legend: str = "right") -> list[Panel]:
+    """Render a figspec to one SVG per dropdown option; ``legend`` as in
+    :func:`draw_panel`."""
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     panels: list[Panel] = []
     for label, traces, layout in _panels(spec):
-        fig, _ = draw_panel(traces, layout, theme=theme, figsize=figsize, dpi=dpi)
+        fig, _ = draw_panel(traces, layout, theme=theme, figsize=figsize, dpi=dpi,
+                            legend=legend)
         try:
             name, detail = _text(layout.get("title"))
             fig.tight_layout(pad=0.6)

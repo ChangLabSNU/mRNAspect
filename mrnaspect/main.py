@@ -1113,6 +1113,20 @@ def config_changes(config_path: ConfigArg) -> list[dict[str, Any]]:
     return out
 
 
+class RunDirError(ValueError):
+    """:func:`resolve_io` or :func:`resolve_run_dir` refusing the run's folders.
+
+    The message is the command line's ("Pass --output-dir <dir>"); ``code`` says which
+    refusal it is, so a surface with no flags to point at words it itself
+    (``--print-config``'s ``run_dir_error_code``). The app showed the flag sentence in red
+    under Run name before an output folder was chosen (2026-11-23).
+    """
+
+    def __init__(self, message: str, code: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
 def resolve_io(cfg: Mapping[str, Any], *, need_input: bool
                ) -> tuple[Optional[Path], Path, Optional[str]]:
     """The input dir, output dir and run name, from the CLI or the config.
@@ -1127,13 +1141,13 @@ def resolve_io(cfg: Mapping[str, Any], *, need_input: bool
 
     out, inp, name = _set("output_dir"), _set("input_dir"), _set("output_name")
     if out is None:
-        raise ValueError(
+        raise RunDirError(
             "no output directory was supplied. Pass --output-dir <dir>, or set "
-            "`output_dir:` in your --config.")
+            "`output_dir:` in your --config.", "no_output_dir")
     if need_input and inp is None:
-        raise ValueError(
+        raise RunDirError(
             "no input directory was supplied. Pass --input-dir <dir>, or set "
-            "`input_dir:` in your --config.")
+            "`input_dir:` in your --config.", "no_input_dir")
     return (Path(inp) if inp else None, Path(out), name)
 
 
@@ -1152,8 +1166,8 @@ def resolve_run_dir(output_dir: Path, *, output_name: Optional[str] = None,
         continue_latest: Continue the most recently modified ``run_*`` subdirectory.
 
     Raises:
-        ValueError: ``output_name`` is not a single directory name, both selectors are
-            given, or ``continue_latest`` finds nothing to continue.
+        RunDirError: ``output_name`` is not a single directory name, both selectors
+            are given, or ``continue_latest`` finds nothing to continue.
     """
     output_dir = Path(output_dir)
     # One directory name: an absolute path, a separator, '..' or '.' would write
@@ -1163,22 +1177,23 @@ def resolve_run_dir(output_dir: Path, *, output_name: Optional[str] = None,
         if not name:
             output_name = None
         elif name in (".", "..") or Path(name).parts != (name,):
-            raise ValueError(
+            raise RunDirError(
                 f"--output-name must be a single directory name, not a path: got "
                 f"{output_name!r}. It names a subdirectory of the output directory; "
-                f"a separator, '..' or an absolute path would write somewhere else.")
+                f"a separator, '..' or an absolute path would write somewhere else.",
+                "run_name_not_one_folder")
         else:
             output_name = name
     if output_name and continue_latest:
-        raise ValueError(
+        raise RunDirError(
             "--output-name and --continue-latest both given; they name the same thing two "
-            "ways. Pass one.")
+            "ways. Pass one.", "two_run_names")
     if continue_latest:
         existing = [d for d in output_dir.glob(f"{RUN_DIR_PREFIX}*") if d.is_dir()]
         if not existing:
-            raise ValueError(
+            raise RunDirError(
                 f"--continue-latest: no {RUN_DIR_PREFIX}* directory under {output_dir} to "
-                f"continue. Drop the flag to start a new run.")
+                f"continue. Drop the flag to start a new run.", "nothing_to_continue")
         return max(existing, key=lambda d: d.stat().st_mtime)
     if output_name:
         return output_dir / output_name
@@ -1371,7 +1386,7 @@ def main(argv: Optional[list[str]] = None) -> int:
             # Needs no input directory and creates nothing. Its own JSON shape, not the
             # run-result contract. run_dir is where a run would write, from the same two
             # functions a run uses; a failure there is reported, not raised.
-            run_dir, run_dir_error = None, None
+            run_dir, run_dir_error, run_dir_error_code = None, None, None
             current, not_compared = None, []
             try:
                 in_dir, out_dir, name = resolve_io(cfg, need_input=False)
@@ -1395,12 +1410,15 @@ def main(argv: Optional[list[str]] = None) -> int:
                     not_compared.append("input folder")
             except ValueError as exc:
                 run_dir_error = str(exc)
+                run_dir_error_code = getattr(exc, "code", None)
             print(json.dumps({
                 "resolved_config": cfg,
                 "config_paths": [str(Path(p).resolve()) for p in (args.config or [])],
                 "shipped_config": str(_SHIPPED_CONFIG),
                 "run_dir": run_dir,
                 "run_dir_error": run_dir_error,
+                # Which refusal it is, for a surface that words it itself (RunDirError).
+                "run_dir_error_code": run_dir_error_code,
                 # Whether a Start would continue an earlier run there, and what it left.
                 "run_dir_state": (describe_run_dir(run_dir, current, not_compared)
                                   if run_dir else None),

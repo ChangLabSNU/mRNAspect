@@ -134,6 +134,20 @@ def test_print_config_without_an_output_folder_describes_nothing() -> None:
     got = json.loads(r.stdout)
     # The shipped config names no output folder, so there is no folder to describe.
     assert got["run_dir"] is None and "no output directory" in got["run_dir_error"]
+    assert got["run_dir_error_code"] == "no_output_dir"
+    assert got["run_dir_state"] is None
+
+
+def test_a_run_name_that_is_not_one_folder_comes_with_its_code(tmp_path: Path) -> None:
+    """The app words Core's refusals itself, by code: the sentence is the command line's
+    ("--output-name must be ..."), and the window has no flags (2026-11-23)."""
+    r = subprocess.run([sys.executable, "-m", "mrnaspect.main", "--print-config",
+                        "--output-dir", str(tmp_path), "--output-name", "a/b"],
+                       capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    got = json.loads(r.stdout)
+    assert got["run_dir_error_code"] == "run_name_not_one_folder"
+    assert got["run_dir_error"].startswith("--output-name must be a single directory name")
     assert got["run_dir_state"] is None
 
 

@@ -93,7 +93,8 @@ def test_a_refusal_is_said_in_red_and_keeps_start_off() -> None:
     assert hint.index("if (s?.refusal) {") < hint.index("if (!s?.exists) {")
     assert 'el.className = "dim err";' in hint[hint.index("if (s?.refusal) {"):]
     missing = _fn(ts, "function missingOnStep(")
-    assert 'return runDirState?.refusal ? ["runname"] : [];' in missing
+    assert ('return runDirState?.refusal || (runDirState?.error && runDirState.code !== '
+            '"no_output_dir")\n      ? ["runname"] : [];') in missing
     sync = _fn(ts, "function syncFlow(")
     assert '"* Give another run name"' in sync
     assert "stepsOf(kind).some(s => missingOnStep(s).length > 0)" in sync
@@ -107,3 +108,34 @@ def test_the_state_is_declared_beside_the_state_the_review_already_reads() -> No
     ts = _TS.read_text()
     block = ts[ts.index("let startedAs: string | null = null;"):][:300]
     assert "let runDirState: any = null;" in block and "let runDirGen = 0;" in block
+
+
+def test_core_s_command_line_wording_is_not_shown_for_what_the_window_can_reach() -> None:
+    """Before an output folder was chosen, the line under Run name read "no output
+    directory was supplied. Pass --output-dir <dir>, or set `output_dir:` in your
+    --config." in red (2026-11-23). The window words Core's refusals itself, by the code
+    --print-config gives (`run_dir_error_code`)."""
+    ts = _TS.read_text()
+    words = ts[ts.index("const RUN_DIR_WORDS"):]
+    words = words[:words.index("};")]
+    assert 'no_output_dir: ["Choose an output folder.", false]' in words
+    assert "run_name_not_one_folder" in words and "--" not in words
+    check = _fn(ts, "async function checkRunDir(")
+    assert 'code: answer["run_dir_error_code"] ?? null' in check
+    hint = _fn(ts, "function renderRunNameHint(")
+    assert "const own = RUN_DIR_WORDS[s.code];" in hint
+    assert 'el.className = own && !own[1] ? "dim" : "dim err";' in hint
+    # A name that is not one folder keeps Start off, as Start would fail on it.
+    assert 'runDirState.code !== "no_output_dir"' in _fn(ts, "function missingOnStep(")
+
+
+def test_every_code_the_window_words_is_one_core_gives() -> None:
+    """A code renamed in Core would fall back to the command line's sentence in silence."""
+    ts = _TS.read_text()
+    words = ts[ts.index("const RUN_DIR_WORDS"):]
+    words = words[:words.index("};")]
+    codes = re.findall(r"^\s*([a-z_]+): \[", words, flags=re.M)
+    core = (_REPO / "mrnaspect" / "main.py").read_text()
+    assert codes, "no codes found"
+    for code in codes:
+        assert f'"{code}")' in core, f"{code} is not a RunDirError code in main.py"

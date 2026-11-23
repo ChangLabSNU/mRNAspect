@@ -1284,10 +1284,13 @@ class CoAReporter(Reporter):
         for fig in interactive:
             full_width = fig["id"] in _FULL_WIDTH_FIGURES
             try:
+                # A column panel's legend goes above the plot: on the right it took
+                # about half the panel's width (the poly(A) figures, 2026-11-23).
                 panels = figrender.render_spec(
                     fig["spec"], theme=figrender.GRAYSCALE,
                     figsize=(figrender.PANEL_SIZE if full_width
-                             else _COLUMN_PANEL_SIZE))
+                             else _COLUMN_PANEL_SIZE),
+                    legend="right" if full_width else "top")
             except Exception as exc:  # noqa: BLE001 - one bad figure must not lose the rest
                 logger.warning("printed figure %r skipped: %s", fig["id"], exc)
                 continue

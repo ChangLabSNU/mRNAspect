@@ -191,6 +191,39 @@ def test_the_legend_sits_outside_the_plot():
     _close(fig)
 
 
+def test_a_narrow_panel_s_legend_sits_above_and_leaves_the_plot_its_width():
+    """In the PDF's two-column figures the legend on the right took about half the
+    panel, and the poly(A) plot was drawn half as wide as the others (2026-11-23).
+    Above the plot, in one row, it covers no mark and takes no width."""
+    traces = [{"type": "scatter", "mode": "lines", "x": [50, 150], "y": [1, 2],
+               "name": "uncorrected"},
+              {"type": "scatter", "mode": "lines", "x": [50, 150], "y": [2, 1],
+               "name": "corrected (assigned reads)"}]
+    width = {}
+    for where in ("right", "top"):
+        fig, ax = fr.draw_panel(traces, {}, figsize=(3.3, 2.6), legend=where)
+        fig.tight_layout(pad=0.6)
+        fig.canvas.draw()
+        plot = ax.get_window_extent()
+        width[where] = plot.width
+        if where == "top":
+            legend = ax.get_legend()
+            assert legend.get_window_extent().y0 >= plot.y1, "above the plot"
+            rows = {round(t.get_window_extent().y0) for t in legend.get_texts()}
+            assert len(rows) == 1, "one row"
+            assert legend.get_window_extent().x1 <= fig.bbox.x1, "inside the panel"
+        _close(fig)
+    assert width["top"] > 1.4 * width["right"], width
+
+
+def test_the_report_puts_a_column_panel_s_legend_above_it() -> None:
+    from pathlib import Path
+    src = (Path(fr.__file__).parent / "reporter.py").read_text()
+    body = src[src.index("def _printed_figures("):]
+    body = body[:body.index("\n    @staticmethod")]
+    assert 'legend="right" if full_width else "top")' in body
+
+
 def test_showlegend_false_is_honoured():
     fig, ax = fr.draw_panel(
         [{"type": "scatter", "mode": "lines", "x": [1], "y": [1], "name": "a"},

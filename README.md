@@ -9,6 +9,17 @@ finished BAM, or **live** while the run is still on the flow cell.
 > how to open it, and [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) how to build it. Licence:
 > MIT ([LICENSE](LICENSE)). Running the tests and the code's layout are in the same page.
 
+![Screen recording of the mRNAspect desktop app on macOS. On the Start page the user
+chooses BAM files, selects a folder of 40 BAM files, the reference FASTA and an output
+folder, names the run Demo, loads run_config.yaml and presses Start. The Current run page
+fills with read length, poly(A) tail, read quality, construct share, per-base identity and
+full-length charts. The HTML report then opens and scrolls to the whole-run poly(A)
+tail-length distribution, median 87 nt.](docs/images/app_demo.webp)
+
+*BAM mode on the test dataset: choose the BAM folder, the reference and an output folder,
+start, and open the report at its poly(A) tail-length distribution. The processing wait is
+cut, and the report shown is the first interim one.*
+
 ## What it measures
 
 | | metric | |

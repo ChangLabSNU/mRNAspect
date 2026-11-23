@@ -173,6 +173,15 @@ reference, not yet written) to `run_dir_state`; the shell's `read_config` passes
 `start_qc` would, the page shows a refusal in red under Run name and keeps Start off, and
 it asks again 300 ms after the last key, not only when a field loses focus.
 
+**Core's run-folder refusals carry a code** (`RunDirError`, a `ValueError`, 2026-11-23).
+Their messages are the command line's ("Pass --output-dir <dir>, or set `output_dir:` in
+your --config"), and the window showed that sentence in red under Run name before an output
+folder was chosen. `--print-config` now adds `run_dir_error_code` (`no_output_dir`,
+`no_input_dir`, `run_name_not_one_folder`, `two_run_names`, `nothing_to_continue`); the
+page words the two it can reach itself ("Choose an output folder.", not red; "A run name
+is one folder name: …", red, Start off) and shows any other as Core wrote it. A test holds
+the page's codes to Core's.
+
 **The name must be a single directory name.** `resolve_run_dir` refuses a separator, `..`,
 `.` or an absolute path, because `output_dir / name` would otherwise leave the directory
 the operator chose:

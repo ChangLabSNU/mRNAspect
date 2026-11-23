@@ -381,9 +381,11 @@ function missingOnStep(s: StepId): string[] {
      (Chromium check, 2026-11-12: the review said "not set" and Start would have failed). */
   if (s === "output") {
     if (!eff("output", "output_dir")) return ["output"];
-    /* The run there would refuse this Start (another input or reference): the line under
-       Run name says why, and Start stays off (2026-11-23). */
-    return runDirState?.refusal ? ["runname"] : [];
+    /* The run there would refuse this Start (another input or reference), or the name is
+       not one folder name: the line under Run name says why, and Start stays off
+       (2026-11-23). */
+    return runDirState?.refusal || (runDirState?.error && runDirState.code !== "no_output_dir")
+      ? ["runname"] : [];
   }
   return [];
 }
@@ -893,6 +895,13 @@ $("config").addEventListener("change", refreshConfig);
    (run_status.json's `continued`). `runDirState` is declared with the run's other state,
    above reviewRows' first call. */
 const RUNNAME_HINT = $("runnamehint").textContent!;
+/* Core's run_dir_error_code -> what the window says, and whether it is a mistake (red).
+   No folder yet is not one: the step's own marker already asks for it. */
+const RUN_DIR_WORDS: Record<string, [string, boolean]> = {
+  no_output_dir: ["Choose an output folder.", false],
+  run_name_not_one_folder: [
+    "A run name is one folder name: no / in it, and not . or .. on its own.", true],
+};
 const plural = (k: number, w: string) => `${k} ${w}${k === 1 ? "" : "s"}`;
 
 async function checkRunDir() {
@@ -915,7 +924,8 @@ async function checkRunDir() {
     return;
   }
   if (gen !== runDirGen) return;
-  runDirState = answer["run_dir_error"] ? { error: String(answer["run_dir_error"]) }
+  runDirState = answer["run_dir_error"]
+    ? { error: String(answer["run_dir_error"]), code: answer["run_dir_error_code"] ?? null }
     : (answer["run_dir_state"] ?? null);
   renderRunNameHint();
   syncFlow();
@@ -945,7 +955,15 @@ function carriedText(s: any): string {
 function renderRunNameHint() {
   const el = $("runnamehint");
   const s = runDirState;
-  if (s?.error) { el.textContent = s.error; el.className = "dim err"; return; }
+  if (s?.error) {
+    /* Core's sentence points at flags ("Pass --output-dir <dir>"), which the window does
+       not have: the refusals it can reach are said in its own words, by Core's code
+       (2026-11-23). An unknown one is shown as Core wrote it. */
+    const own = RUN_DIR_WORDS[s.code];
+    el.textContent = own ? own[0] : s.error;
+    el.className = own && !own[1] ? "dim" : "dim err";
+    return;
+  }
   /* Core's own words for why the run there would refuse this Start: another input or
      reference (run_input.py). Start stays off (missingOnStep). */
   if (s?.refusal) {

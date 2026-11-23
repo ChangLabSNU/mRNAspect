@@ -146,7 +146,8 @@ def test_it_is_not_the_run_result_contract() -> None:
     out = _print_config()
     assert "status" not in out and "exit_code" not in out
     assert set(out) == {"resolved_config", "config_paths", "shipped_config",
-                        "run_dir", "run_dir_error", "run_dir_state", "config_changes"}
+                        "run_dir", "run_dir_error", "run_dir_error_code",
+                        "run_dir_state", "config_changes"}
 
 
 def test_what_it_prints_is_what_a_run_would_use(tmp_path) -> None:
