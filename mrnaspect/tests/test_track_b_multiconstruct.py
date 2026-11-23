@@ -414,3 +414,28 @@ def test_result_json_records_the_constructs(
     assert doc["qc_metrics"]["construct_accounting"]["partitions"] is True
     assert doc["qc_metrics"]["unassigned"]["n_reads"] == 0
     assert UNASSIGNED in doc["snapshots"]
+
+
+@pytest.mark.parametrize("on_error", ["skip", "raise"])
+def test_the_construct_limit_stops_the_run_with_its_own_error(
+    tmp_path: Path, fixture_bam: Path, curlcake_ref: Path, capsys, on_error: str
+) -> None:
+    """Under `on_error: skip` the driver took the limit for one bad input, went on with
+    the counts half updated, and the run ended on a read-accounting error that said
+    nothing of the limit. The limit is wrong for the whole run, under either policy."""
+    import shutil
+
+    from mrnaspect.main import main
+
+    cfg = tmp_path / "c.yaml"
+    cfg.write_text(f"on_error: {on_error}\nanalysis:\n  max_constructs: 1\n")
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    shutil.copy(fixture_bam, in_dir / "small_aligned.bam")
+    code = main(["--config", str(cfg), "--input-dir", str(in_dir),
+                 "--output-dir", str(tmp_path / "out"), "--reference", str(curlcake_ref),
+                 "--mode", "bam", "--min-reads", "1"])
+    said = capsys.readouterr().out
+    assert code == 2
+    assert "max_constructs=1" in said and "analysis.max_constructs" in said, said
+    assert "primary read" not in said, "the read-accounting error must not be the last word"

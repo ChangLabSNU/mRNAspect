@@ -44,9 +44,27 @@ POLYA = {"polya": {"minimap2_flags": "-ax map-ont -k7 -w5 --secondary=no -y"}}
 
 
 def _visible(page: str) -> str:
-    """A page's text as a reader gets it: no script, no style, no markup."""
+    """A page's text as a reader gets it: no script, no style, no markup.
+
+    The licence texts of the software embedded in the page are left out. They are other
+    people's words, copied whole, and these rules are for the report's own; the line
+    that opens them is the report's and stays in.
+    """
     page = re.sub(r"<script.*?</script>|<style.*?</style>", " ", page, flags=re.S)
+    page = re.sub(r'(<details class="third-party-notices">.*?)<pre>.*?</pre>', r"\1", page,
+                  flags=re.S)
     return html_lib.unescape(re.sub(r"\s+", " ", re.sub(r"<[^>]+>", " ", page)))
+
+
+def test_the_licence_texts_left_out_are_only_those_of_the_embedded_software(pages) -> None:
+    """One block of the page is left out of these rules, and it holds nothing else."""
+    screen = pages["screen"]
+    assert screen.count("<pre>") == 1 and "<pre>" not in pages["print"]
+    start = screen.index('<details class="third-party-notices">')
+    block = screen[start:screen.index("</details>", start)]
+    assert block.count("<pre>") == 1
+    assert "Third-party software in this file: licence notices" in _visible(screen)
+    assert "Licence notices for plotly-cartesian" in block
 
 
 @pytest.fixture(scope="module")

@@ -232,19 +232,20 @@ def test_manifest_is_not_a_skip_set(
 def test_boot_clears_stale_partial_artifacts(
     tmp_path: Path, fixture_bam: Path, curlcake_ref: Path
 ) -> None:
-    """Publish-by-rename (C2) makes every *.partial the debris of a killed stage."""
+    """Publish-by-rename (C2): a `partial-` output in the cache folder never finished."""
     run_dir = tmp_path / "run"
     _run_mimic(run_dir, n=1)
     out = tmp_path / "out"
-    out.mkdir()
-    (out / "aligned_x.bam.partial").write_text("half a BAM")
-    stale_dir = out / "basecall_x.partial"
+    cache = out / "basecall_cache"
+    cache.mkdir(parents=True)
+    (cache / "partial-aligned_x.bam").write_text("half a BAM")
+    stale_dir = cache / "partial-basecall_x"
     stale_dir.mkdir()
     (stale_dir / "chunk_0_0.bam").write_text("half a chunk")
 
     pipe = _realtime(run_dir, out, curlcake_ref, fixture_bam)
     pipe.boot()
-    assert not (out / "aligned_x.bam.partial").exists()
+    assert not (cache / "partial-aligned_x.bam").exists()
     assert not stale_dir.exists()
 
 

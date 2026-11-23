@@ -92,8 +92,9 @@ answer for it; staging writes the commit of this checkout into the installed pac
 mrnaspect package) and `provenance.py` reads it there, before git. The check asks that the record is in the app
 and that Core, run from the app, reports that commit. Its line says "MODIFIED" when tracked
 files differed from the commit at staging: the app then holds code no commit describes,
-and its reports say so beside the commit. Build an app that is to be given out from a
-clean working tree.
+and its reports say so beside the commit. The check fails when the app was built from
+another commit than this checkout is at: build it again, or, for a release, give the
+commit it should be of as the script's second argument.
 
 The app is signed ad hoc: sealed, with no identity from Apple. A copy that reached another
 Mac through a browser or a chat client is quarantined by macOS, which stops the first open
@@ -102,12 +103,14 @@ allow it in System Settings › Privacy & Security (Open Anyway), or clear the m
 `xattr -dr com.apple.quarantine mRNAspect.app`. Seen on macOS 27 with a copy downloaded
 through a browser (2026-11-18): the dialog, then the app opened and a run completed.
 
-To hand the app to someone, archive it with `ditto`, which keeps the bundle as it was
-signed:
+To hand a build of your own to someone, archive it with `ditto`, which keeps the bundle
+as it was signed:
 
 ```bash
 ditto -c -k --keepParent mRNAspect.app mRNAspect-0.1.0-macos-arm64.zip
 ```
+
+A release is not built this way: see the next section.
 
 `npm run tauri dev` works the same way. Both stage `dist/bundle-env` first -- the
 environment the app ships, built by `scripts/stage_bundle_env.sh` -- through npm's
@@ -116,6 +119,51 @@ has to build it, and that first run takes about a minute; afterwards the copy is
 and it takes a second. `npm run stage-env -- --force` rebuilds it from scratch.
 
 See [packaging.md](packaging.md) for what ships and what has been measured.
+
+## Releasing the desktop app
+
+A release is built by one script, from a new clone of its tag, and no other way:
+
+```bash
+sudo mkdir -p /opt/mrnaspect-build && sudo chown "$USER" /opt/mrnaspect-build   # once
+bash scripts/build_release.sh v0.1.0
+```
+
+It clones the tag into the build folder, installs the locked environment outside the
+clone, builds the app, archives it with `ditto`, and then unpacks the archive somewhere
+new and reads it (`scripts/check_release.py`). It uploads nothing and moves no tag.
+
+Why not from a developer's checkout. The first release was, and three things followed.
+About 4,000 files of the app named the build account's home folder: compiled Python,
+the files conda writes its install folder into, conda's records, the shell's binary. The
+app's results named a commit of the development repository, which no reader of the
+published one can look up. And the staged environment was reused, so a module deleted
+from the source could still ship. A new clone of the tag, in a folder that is no one's
+home, with the environment outside the clone, answers the three together.
+
+The build folder must be empty and must be somewhere only an administrator can create
+(`/opt/mrnaspect-build`; not `/tmp`, not `/Users/Shared`). Its path ends up inside the
+app, as the default place some libraries look for configuration and modules, so on the
+computer that runs the app it must not be a folder an ordinary user could make. The
+script refuses a folder that fails either test, and removes nothing itself.
+
+What `check_release.py` asks of the unpacked archive: no file names the home folder or
+the checkout; the build record names the tag's commit, written from an unmodified tree;
+every file of the installed Core is in that commit, byte for byte; WeasyPrint and Pillow
+are at least the versions `build_release.sh` lists and pypdf is absent; the third
+parties' notices list what the environment records; `check_bundle.sh` passes on the
+unpacked copy; and the app's own Python runs the fixture BAM to 166 mapped reads on four
+constructs, with the commit in full in `qc_result.json` and its short form in the HTML
+and the PDF. It can be run by itself on any archive:
+
+```bash
+pixi run python scripts/check_release.py mRNAspect-0.1.0-macos-arm64.zip \
+    --commit <the tag's commit> --source . --forbid /Users/<the build account>
+```
+
+Two things are left for a person: opening the app on a Mac with no development Python,
+pixi or Homebrew and running the fixture through the window; and attaching the archive
+to the release.
 
 ## Layout
 

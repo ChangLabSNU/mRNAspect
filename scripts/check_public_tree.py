@@ -40,7 +40,7 @@ BUILT = {"node_modules", "target", "dist", "build", ".pixi", "__pycache__", ".gi
 #: Other people's text, copied whole (licence texts, a minified library, lock files):
 #: their words are not ours to hold to this.
 VERBATIM_DIRS = ("scripts/notices/",)
-VERBATIM_NAMES = (".min.js", ".lock", "package-lock.json")
+VERBATIM_NAMES = (".min.js", ".lock", "package-lock.json", ".LICENSES.txt")
 #: The two files that spell the patterns below.
 SPELL_THE_PATTERNS = ("scripts/check_public_tree.py", "mrnaspect/tests/test_public_tree.py")
 

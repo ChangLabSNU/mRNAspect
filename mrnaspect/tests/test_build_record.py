@@ -191,17 +191,96 @@ def test_a_file_that_is_not_a_record_fails_the_check(
 
 @_needs_script
 @_needs_git
-def test_the_check_notes_a_checkout_that_has_moved_on(
+def test_the_check_fails_on_a_checkout_that_has_moved_on(
         tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
-    """Not a failure: an app built yesterday is still that app."""
+    """The app is checked against the source it is said to be built from. This printed a
+    note and passed; a release was checked that way against the wrong commit."""
     tool = _tool()
     env, source = _env(tmp_path), _checkout(tmp_path)
     assert tool.main([str(env), "--source", str(source)]) == 0
+    built = _git(source, "rev-parse", "HEAD")
     (source / "tracked.txt").write_text("two\n")
     _git(source, "commit", "--quiet", "-am", "two")
     capsys.readouterr()
-    assert tool.main(["--check", str(env), "--source", str(source)]) == 0
-    assert "the app was built from another commit" in capsys.readouterr().out
+    assert tool.main(["--check", str(env), "--source", str(source)]) == 1
+    said = capsys.readouterr().err
+    assert "built from another commit" in said
+    assert built in said and _git(source, "rev-parse", "HEAD") in said
+
+
+# --- a release: the record against the commit the release is of ---------------------------
+
+@_needs_script
+@_needs_git
+def test_a_release_is_checked_against_the_commit_it_is_of(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """`--expect` takes the commit, wherever the check runs: no checkout is needed."""
+    tool = _tool()
+    env, source = _env(tmp_path), _checkout(tmp_path)
+    assert tool.main([str(env), "--source", str(source)]) == 0
+    built = _git(source, "rev-parse", "HEAD")
+    capsys.readouterr()
+    assert tool.main(["--check", str(env), "--expect", built]) == 0
+    assert f"built from {built}" in capsys.readouterr().out
+
+    other = "f" * 40
+    assert tool.main(["--check", str(env), "--expect", other]) == 1
+    said = capsys.readouterr().err
+    assert built in said and other in said
+
+
+@_needs_script
+@_needs_git
+def test_a_release_can_be_named_by_its_tag(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """A tag is resolved in the checkout to the commit it points at, annotated or not."""
+    tool = _tool()
+    env, source = _env(tmp_path), _checkout(tmp_path)
+    assert tool.main([str(env), "--source", str(source)]) == 0
+    _git(source, "tag", "-a", "v0.1.0", "-m", "release")
+    assert tool.main(["--check", str(env), "--source", str(source),
+                      "--expect", "v0.1.0"]) == 0
+    (source / "tracked.txt").write_text("two\n")
+    _git(source, "commit", "--quiet", "-am", "two")
+    _git(source, "tag", "v0.1.1")
+    capsys.readouterr()
+    # The checkout has moved on; the app is still the release it was built as.
+    assert tool.main(["--check", str(env), "--source", str(source),
+                      "--expect", "v0.1.0"]) == 0
+    assert tool.main(["--check", str(env), "--source", str(source),
+                      "--expect", "v0.1.1"]) == 1
+    capsys.readouterr()
+    # A name with no checkout to resolve it in, or one git does not know, is refused.
+    assert tool.main(["--check", str(env), "--expect", "v0.1.0"]) == 1
+    assert "--source" in capsys.readouterr().err
+    assert tool.main(["--check", str(env), "--source", str(source),
+                      "--expect", "v9.9.9"]) == 1
+
+
+@_needs_script
+def test_a_release_with_no_record_is_refused(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Without `--expect` and without a checkout, no record is only said."""
+    tool = _tool()
+    env = _env(tmp_path)
+    assert tool.main(["--check", str(env)]) == 0
+    assert tool.main(["--check", str(env), "--expect", _COMMIT]) == 1
+    assert "no _build.json" in capsys.readouterr().err
+
+
+@_needs_script
+@_needs_git
+def test_a_release_built_from_a_modified_tree_is_refused(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """The commit is right and the code is not that commit's."""
+    tool = _tool()
+    env, source = _env(tmp_path), _checkout(tmp_path)
+    (source / "tracked.txt").write_text("edited, not committed\n")
+    assert tool.main([str(env), "--source", str(source)]) == 0
+    built = _git(source, "rev-parse", "HEAD")
+    capsys.readouterr()
+    assert tool.main(["--check", str(env), "--expect", built]) == 1
+    assert "modified" in capsys.readouterr().err.lower()
 
 
 @_needs_script

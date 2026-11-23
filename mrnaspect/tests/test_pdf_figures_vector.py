@@ -183,7 +183,7 @@ def _rasters(reader) -> list[str]:
 
 
 def test_the_pdf_holds_no_raster_image(printed) -> None:
-    pypdf = pytest.importorskip("pypdf")
+    import pypdf  # not importorskip: without the reader this must fail, not skip
     _html, pdf = printed
     found = _rasters(pypdf.PdfReader(str(pdf)))
     assert not found, f"{len(found)} raster images in the PDF, e.g. {found[:3]}"

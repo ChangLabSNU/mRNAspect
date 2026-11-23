@@ -36,6 +36,28 @@ DEFAULT_RUN_END_GLOB = "final_summary_*.txt"
 # Unreadable scans of the POD5 directory in a row before it is logged as a warning.
 _DIR_MISSING_WARN_AFTER = 3
 
+#: The 28 bytes every finished BAM ends with: an empty BGZF block (the SAM
+#: specification's end-of-file marker). The writer puts it there when it closes the file.
+BGZF_EOF = bytes.fromhex("1f8b08040000000000ff0600424302001b0003000000000000000000")
+
+
+def bam_is_complete(path: Path | str) -> bool:
+    """Whether a BAM ends with the end-of-file block, so its writer has closed it.
+
+    A size that has stopped changing is not enough for a BAM: a writer that pauses
+    between batches of reads leaves a file that is quiet and half written, and such a
+    file opens and reads as a shorter BAM. An unreadable file is not complete.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, 2)
+            if fh.tell() < len(BGZF_EOF):
+                return False
+            fh.seek(-len(BGZF_EOF), 2)
+            return fh.read() == BGZF_EOF
+    except OSError:
+        return False
+
 
 @dataclass(frozen=True)
 class FileReadyEvent:
@@ -72,6 +94,9 @@ class DirectoryWatcher:
             pause between bursts looks like a finished file.
         emit_preexisting: Emit files already present at the first scan (QC started
             mid-run, or a backlog on disk). ``False`` marks them seen without emitting.
+        is_complete: Asked of a file once its size is stable; a file it rejects is not
+            emitted and is asked again at every scan. For formats whose writer can go
+            quiet mid-file (:func:`bam_is_complete`). None asks nothing more than size.
     """
 
     def __init__(
@@ -87,6 +112,7 @@ class DirectoryWatcher:
         run_end_glob: str = DEFAULT_RUN_END_GLOB,
         exclude_suffixes: tuple[str, ...] = DEFAULT_EXCLUDE_SUFFIXES,
         emit_preexisting: bool = True,
+        is_complete: Optional[Callable[[Path], bool]] = None,
     ) -> None:
         if poll_interval_s <= 0:
             raise ValueError(f"poll_interval_s must be > 0, got {poll_interval_s}")
@@ -106,6 +132,8 @@ class DirectoryWatcher:
         self.run_end_glob = run_end_glob
         self.exclude_suffixes = tuple(exclude_suffixes)
         self.emit_preexisting = emit_preexisting
+        self.is_complete = is_complete
+        self._incomplete_warned: set[Path] = set()
 
         # path -> (last_observed_size, consecutive_matching_observations)
         self._sizes: dict[Path, tuple[int, int]] = {}
@@ -253,6 +281,14 @@ class DirectoryWatcher:
             # failed write, not a finished one.
             logger.warning("%s has been 0 bytes for %.0fs — not emitting an empty POD5",
                            path.name, self.verified_silence_s)
+            return None
+        if self.is_complete is not None and not self.is_complete(path):
+            # Quiet, and not finished: left for a later scan. Said once per file.
+            if path not in self._incomplete_warned:
+                self._incomplete_warned.add(path)
+                logger.warning(
+                    "%s has not changed for %.0fs but its writer has not closed it; "
+                    "waiting for it to be finished", path.name, self.verified_silence_s)
             return None
 
         self._emitted.add(path)

@@ -21,6 +21,31 @@ logger = logging.getLogger(__name__)
 # Lines of the stage log logged at ERROR when a stage fails.
 _FAILURE_TAIL_LINES = 40
 
+#: run_basecall.sh and run_align.sh build an output under this prefix and rename it into
+#: place once it is complete. A finished output starts with ``basecall_`` or
+#: ``aligned_``, so no input name can make a finished output look unfinished. A suffix
+#: could: ``x.partial.pod5`` basecalls into ``basecall_x.partial``.
+PARTIAL_PREFIX = "partial-"
+_UNFINISHED_STARTS = (f"{PARTIAL_PREFIX}basecall_", f"{PARTIAL_PREFIX}aligned_")
+
+
+def unfinished_outputs(out_dir: Path) -> list[Path]:
+    """What a killed basecall or alignment left in ``out_dir``, the wrappers' output folder.
+
+    Only that folder's own entries with the two names the wrappers build under: an
+    unfinished basecall folder, an unfinished BAM with its index, and the temporary
+    files ``samtools sort`` names after its output. Nothing is looked for in a
+    subfolder, and a finished output or a file of the operator's is never in the list,
+    whatever its name contains.
+
+    Returns:
+        The paths, sorted; empty when ``out_dir`` does not exist.
+    """
+    out_dir = Path(out_dir)
+    if not out_dir.is_dir():
+        return []
+    return sorted(p for p in out_dir.iterdir() if p.name.startswith(_UNFINISHED_STARTS))
+
 
 def _tail(path: Path, n: int) -> str:
     """The last ``n`` lines of ``path``, or a note saying why they could not be read.

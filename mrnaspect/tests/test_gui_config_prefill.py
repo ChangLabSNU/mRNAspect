@@ -76,16 +76,22 @@ def test_all_three_config_layers_reach_the_command_line_in_order() -> None:
 def test_the_shell_s_own_config_layer_forces_mode_AND_NOTHING_ELSE() -> None:
     """Every key in it overrides the operator silently; there may be exactly one.
 
-    `mode` is the one the shell is entitled to set, because the real-time driver is
-    pod5-only by construction. A second key added here would quietly outrank whatever
-    the operator wrote, with nothing on screen to say so.
+    `mode` is the one the shell is entitled to set: a live run must be told whether it
+    follows POD5 files or MinKNOW's BAM files, and the card says which. A second key
+    added here would quietly outrank whatever the operator wrote, with nothing on screen
+    to say so. There is one layer per kind of file, and the one written is the card's.
     """
-    written = re.search(r'std::fs::write\(&cfg_path,\s*\n?\s*"(.*?)"\s*\)',
-                        _RS.read_text(), re.S)
-    assert written, "could not find the config the shell writes for the real-time driver"
-    keys = [ln.split(":")[0].strip() for ln in written.group(1).splitlines()
-            if ln.strip() and not ln.lstrip().startswith("#")]
-    assert keys == ["mode"], f"the shell's config layer sets {keys}, not just ['mode']"
+    rs = _RS.read_text()
+    layers = dict(re.findall(r'const LIVE_LAYER_([A-Z0-9]+): &str = "(.*?)";', rs, re.S))
+    assert sorted(layers) == ["BAM", "POD5"], sorted(layers)
+    for name, text in layers.items():
+        keys = [ln.strip() for ln in text.splitlines()
+                if ln.strip() and not ln.lstrip().startswith("#")]
+        assert keys == [f"mode: {name.lower()}"], (
+            f"the shell's config layer for {name} sets {keys}, not just its mode")
+    body = _fn_body("start_qc")
+    assert 'let layer = if mode == "bam" { LIVE_LAYER_BAM } else { LIVE_LAYER_POD5 };' in body
+    assert "std::fs::write(&cfg_path, layer)" in body
 
 
 # --- 2. the pre-filled hints ------------------------------------------------
@@ -174,7 +180,7 @@ def test_read_config_s_arguments_match_the_rust_signature() -> None:
           for k in re.findall(r'[{,]\s*([A-Za-z_][A-Za-z0-9_]*)\s*:', sent.group(1))}
     sig = _RS.read_text()
     sig = sig[sig.index("fn read_config("): sig.index("->", sig.index("fn read_config("))]
-    rust = set(re.findall(r"([a-z_][a-z0-9_]*)\s*:\s*String", sig))
+    rust = set(re.findall(r"([a-z_][a-z0-9_]*)\s*:\s*(?:String|bool)", sig))
     assert ts == rust, f"read_config mismatch: TS sends {sorted(ts)}, Rust takes {sorted(rust)}"
 
 

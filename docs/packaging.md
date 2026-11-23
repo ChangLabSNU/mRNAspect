@@ -89,6 +89,9 @@ that is `poppler`, test-only tooling the suite needs to read a rendered PDF back
 lands here because it is declared in the one environment — and
 `dist/bundle-env/bin/mrnaspect`, run from `/` under `env -i`, processes the fixture BAM and
 renders both HTML and PDF with exit code 0. The osx-arm64 environment measures 420 MB.
+(Since 2026-11-21 that launcher is no longer in the staged environment, and neither is
+the PDF reader: see "The build folder's path" below. The app starts
+`python3 -m mrnaspect.main`.)
 
 The source path is relative to `src-tauri/`, so **the build must follow
 `pixi install` and then `stage_bundle_env.sh` on the build machine**, and fails loudly if
@@ -204,13 +207,42 @@ development environment.
   found the system's fonts, through fontconfig's built-in fallback, but not the rules in
   `conf.d`.
 
-**What else carries the build folder's path, and is left.** About 1,270 files of the app:
-the source path recorded in compiled Python (`.pyc`), pkg-config and cmake files, conda's
-own records, console-script shebangs (never run: the shell starts `python3 -m
-mrnaspect.main`), defaults compiled into libraries the app does not use that way (openssl's
-certificate folder, glib's module folder, ncurses' terminfo folder), and the panic
-locations in the shell's own binary. None is read at run time. They do mean the app shows
-where on the build machine it was built.
+**The build folder's path: what carried it, and what is done about it (2026-11-21).**
+In the 0.1.0 archive 4,021 files named the folder the app was built in, which was under
+the build account's home: 3,336 compiled Python files, pkg-config and cmake files,
+conda's own records, console-script shebangs, defaults compiled into libraries
+(openssl's certificate folder, glib's module folder, ncurses' terminfo folder), and the
+panic locations in the shell's own binary. None is read at run time, and they were left
+at first. They do show where on the build machine the app was built, so they are no
+longer left:
+
+* **Compiled Python.** A `.pyc` holds its source's file name, by default the full path
+  when it was compiled. `bundle_bytecode.py` now compiles each with its path inside the
+  environment (`lib/python3.14/...`), and treats a `.pyc` that records anything else as
+  not current, so one from an earlier staging is compiled again. Python puts the real
+  path back when it loads a module beside its source, so tracebacks are unchanged. On a
+  trial staging on linux-64, 3,337 files named the staging folder before and none after.
+* **Core's own metadata and launchers.** Core is installed from a wheel, by name
+  (`bundle_install_core.py`), so its metadata no longer records the checkout
+  (`direct_url.json`); the two launchers pip writes, which begin with the staging
+  folder's interpreter path and which nothing starts, are taken out.
+* **Everything conda and Rust write.** Their paths are those of the folder the
+  environment was installed in and of Rust's registry, and are compiled or written in at
+  install time. A release is therefore built in a folder that is no one's home, with the
+  environment outside the checkout (`scripts/build_release.sh`; the development guide
+  says how). Those files then name that build folder, and neither a home folder nor the
+  checkout.
+
+Because the build folder's path stays in the app as a default place those libraries
+look, it must be one an ordinary user cannot create on the computer that runs the app:
+the release script refuses a build folder whose parent anyone can write to.
+`scripts/check_release.py` unpacks the finished archive and fails if any file still
+names the home folder or the checkout.
+
+**What staging leaves out besides.** readline (GPL-3.0-only) and pyphen's dictionaries,
+as above; and pypdf, which only the tests use, to read a rendered PDF back. It rode into
+the first release, at a version with a published advisory, because the tests and the app
+are made from one environment.
 
 **The app must not write into itself.** A seal covers every file, so a file the app
 changes or adds after it is signed breaks it. Python does exactly that by default: a .pyc
@@ -414,7 +446,10 @@ until then they were 200 dpi PNGs, 194 of them in the report measured below.)
   glyph outlines is a node per glyph. Live text would cut WeasyPrint's time by about a
   third (1.61 to 1.05 s on the 13 figures' first panels) but sets the figure text in
   whatever font the machine resolves, not the one matplotlib laid it out in.
-- **Compatibility.** `pixi.lock` pins weasyprint 69.0 (noarch) and pango 1.58.2 for both
+- **Compatibility.** `pixi.lock` pinned weasyprint 69.0 (noarch) when this was measured.
+  Since 2026-11-21 it pins 70.0, as its pure-Python wheel from PyPI: 69.0 has two
+  published advisories and conda-forge had nothing newer. Everything WeasyPrint needs
+  still comes from conda, with pango 1.58.2, for both
   platforms that ship, linux-64 and osx-arm64; on Darwin arm64 the relocated environment
   bound Pango and wrote the PDF (2026-10-16, above). The PDF is A4, PDF 1.7, with its
   fonts embedded as subsets (TeX Gyre Heros and Noto Sans Mono on linux-64; macOS

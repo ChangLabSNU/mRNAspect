@@ -135,7 +135,7 @@ def test_the_screen_report_draws_the_section(with_files) -> None:
 def test_the_pdf_draws_it_after_the_constructs(with_files) -> None:
     """The archived artifact, read on its own. The instrument's record closes the report,
     after the material has been described."""
-    pypdf = pytest.importorskip("pypdf")
+    import pypdf  # not importorskip: without the reader this must fail, not skip
     text = re.sub(r"\s+", " ", " ".join(
         p.extract_text() or "" for p in pypdf.PdfReader(str(with_files / "report_run_end.pdf")).pages))
     for title in ("Sequencing information", *_TITLES):

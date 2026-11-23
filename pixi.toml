@@ -60,7 +60,26 @@ pyyaml = "*"
 # pyproject's `report` extra. Core degrades deliberately without them (it still writes
 # qc_result.json and says so in the log), but a normal install should have them.
 jinja2     = "*"
-weasyprint = ">=69.0,<70"
+# WeasyPrint itself comes from PyPI ([pypi-dependencies], below): on 2026-11-21 conda-forge
+# still had 69.0 as its newest, and 69.0 is the version of two published advisories (image
+# handling among them). Everything it needs still comes from conda, as before. The list is
+# the conda recipe's for 69.0, which is also what 70.0's own metadata asks for, plus the
+# two packages its `fonttools[woff]` asks for; pango and glib are the native libraries
+# the PDF goes through. With them here, nothing but WeasyPrint's own pure-Python wheel is
+# taken from PyPI (a test holds that: mrnaspect/tests/test_environment_lock.py).
+pydyf         = ">=0.11.0"
+cffi          = ">=0.6"
+tinyhtml5     = ">=2.0.0b1"
+tinycss2      = ">=1.5.0"
+cssselect2    = ">=0.8.0"
+pyphen        = ">=0.9.1"
+# 13.0.0 carries security fixes; 12.3.0 was in the first release.
+pillow        = ">=13.0.0"
+fonttools     = ">=4.59.2"
+brotli-python = "*"
+zopfli        = "*"
+pango         = ">=1.44.0"
+glib          = "*"
 # matplotlib-BASE, not matplotlib. The meta-package depends on pyside6, which pulls
 # qt6-main, libclang and libllvm: 186 MB packed (~280 MB unpacked) of GUI toolkit for a
 # process that calls `matplotlib.use("Agg")` before it draws anything and has no window.
@@ -110,7 +129,9 @@ pytest = ">=9.1.1,<10"
 # order, not physical order. Do not write a layout-order assertion against it. If one is
 # ever needed, it needs a reader that promises physical order -- and then that reader's
 # licence has to be looked at again before it reaches pixi.toml.
-pypdf = "*"
+# At least 6.21.4: 6.21.2, in the first release, has a published advisory. The app does
+# not carry it at all: staging leaves it out (scripts/strip_bundle_env.py).
+pypdf = ">=6.21.4"
 # Both only to register this package into the env as an editable install (see
 # dev-install). setuptools is not optional: `--no-build-isolation` tells pip to use THIS
 # environment's build backend instead of downloading a throwaway one, so the backend has
@@ -127,6 +148,11 @@ setuptools = ">=64"
 #
 # [activation.env]
 # QCRNA_PROTECTED_ROOTS = "/data/recorded_runs:/data/released"
+
+[pypi-dependencies]
+# The one package from PyPI, and why, is said at `jinja2` above. Pinned: a new WeasyPrint
+# changes how the PDF is laid out, and that is looked at before it is taken.
+weasyprint = "==70.0"
 
 [tasks]
 test = "pytest tests/ mrnaspect/tests/ -v"

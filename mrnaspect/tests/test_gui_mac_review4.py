@@ -202,14 +202,16 @@ def test_the_commands_take_what_the_page_sends() -> None:
     """Rust names its arguments in snake_case and Tauri expects camelCase from the page;
     a parameter the page no longer sends is an error at the first call, on the Mac."""
     ts, rust = _TS.read_text(), _RS.read_text()
-    for command, sent in (("read_config", {"config"}),
+    for command, sent in (("read_config", {"config", "output_dir", "run_name",
+                                           "input_dir", "reference", "mode", "live"}),
                           ("describe_input", {"config", "path", "mode", "live"}),
                           ("open_notices", set())):
         head = re.search(rf"fn {command}\(([^)]*)\)", rust).group(1)
         params = {p.split(":")[0].strip() for p in head.split(",") if p.strip()} - {"app"}
         assert params == sent, (command, params)
     assert 'invoke("open_notices");' in ts
-    assert 'invoke<any>("read_config",\n      { config: val("config") });' in ts
+    assert ('invoke<any>("read_config",\n      { config: val("config"), outputDir: "", '
+            'runName: "", inputDir: "", reference: "",\n        mode: "", live: false });') in ts
 
 
 # --- Cmd + and Cmd - (2026-11-14: for the manuscript's and the poster's screenshots) ---

@@ -272,20 +272,27 @@ const STEP_NAMES: Record<StepId, string> = {
   input: "Input", reference: "Reference", arm: "Modification", model: "Model",
   sample: "Sample", output: "Save to", review: "Review",
 };
-/** The screens a card asks, in order: a BAM run has no model to choose. */
-const stepsOf = (k: Kind): StepId[] => k === "bam"
+/* What a live run follows: MinKNOW's POD5 files, basecalled here, or the BAM files
+   MinKNOW basecalls itself (bam_pass/ and bam_fail/ of the run). Chosen on the live
+   card's input screen; the other two cards do not use it. */
+let liveSource: "pod5" | "bam" = "pod5";
+/* Whether a card reads BAM files: the BAM card, and a live run that follows them. Such a
+   run basecalls nothing, so it has no model to choose and needs no device. */
+const readsBam = (k: Kind) => k === "bam" || (k === "live" && liveSource === "bam");
+/** The screens a card asks, in order: a run of BAM files has no model to choose. */
+const stepsOf = (k: Kind): StepId[] => readsBam(k)
   ? ["input", "reference", "arm", "sample", "output", "review"]
   : ["input", "reference", "arm", "model", "sample", "output", "review"];
 const KIND_TEXT: Record<Kind, { title: string; input: string; hint: string }> = {
   live: { title: "Live run", input: "MinKNOW run",
-          hint: "any folder of the run: its run folder, its pod5/, its sample or experiment" },
+          hint: "any folder of the run: its run folder, its pod5/ or bam_pass/, its sample or experiment" },
   pod5: { title: "POD5 files", input: "POD5 folder",
           hint: "the folder holding the POD5 files, or the run folder above it" },
   bam:  { title: "BAM files", input: "BAM folder",
           hint: "BAMs of basecalled reads, aligned or not; mRNAspect aligns them" },
 };
-/* Core's mode for a card. Live is pod5 mode with the real-time driver. */
-const modeOf = (k: Kind) => (k === "bam" ? "bam" : "pod5");
+/* Core's mode for a card. Live is the real-time driver, in the mode of what it follows. */
+const modeOf = (k: Kind) => (readsBam(k) ? "bam" : "pod5");
 const isRealtime = () => kind === "live";
 
 for (const card of Array.from(document.querySelectorAll<HTMLButtonElement>(".kind"))) {
@@ -299,16 +306,33 @@ function openFlow(k: Kind) {
   $("inputlabel").textContent = t.input;
   AUTHORED["input"] = t.hint;
   ($("input") as HTMLInputElement).placeholder = t.hint;
-  ($("pod5only") as HTMLElement).hidden = k === "bam";
+  ($("pod5only") as HTMLElement).hidden = readsBam(k);
   ($("rthint") as HTMLElement).hidden = k !== "live";
+  ($("livesource") as HTMLElement).hidden = k !== "live";
   /* A POD5 card needs the Device settings; BAM needs none, so it is never blocked. */
-  $("devicebanner").hidden = k === "bam" || machineIsSet();
+  $("devicebanner").hidden = readsBam(k) || machineIsSet();
   $("kindpick").hidden = true;
   $("flow").hidden = false;
   inputInfo = null;
   void refreshConfig().then(() => describeInput());
+  void checkRunDir();
   setStep("input");
 }
+
+/** What a live run follows. The screens change with it (a BAM run has no Model screen),
+ *  and Core is asked again about the folder, since it now counts other files there. */
+function setLiveSource(m: "pod5" | "bam") {
+  liveSource = m;
+  for (const b of Array.from(document.querySelectorAll<HTMLButtonElement>("[data-livesource]")))
+    b.setAttribute("aria-checked", String(b.dataset.livesource === m));
+  ($("pod5only") as HTMLElement).hidden = readsBam(kind);
+  $("devicebanner").hidden = readsBam(kind) || machineIsSet();
+  startedAs = null;
+  setStep(step);
+  void describeInput();
+}
+for (const b of Array.from(document.querySelectorAll<HTMLButtonElement>("[data-livesource]")))
+  b.addEventListener("click", () => setLiveSource(b.dataset.livesource as "pod5" | "bam"));
 
 /** Show one screen; the step bar names this card's screens, the earlier ones as links. */
 function setStep(s: StepId) {
@@ -355,7 +379,12 @@ function missingOnStep(s: StepId): string[] {
     ? (pastedOk() ? [] : ["reftext"]) : (eff("ref", "reference") ? [] : ["ref"]);
   /* The shipped config names no output folder, and Start refuses a run without one
      (Chromium check, 2026-11-12: the review said "not set" and Start would have failed). */
-  if (s === "output") return eff("output", "output_dir") ? [] : ["output"];
+  if (s === "output") {
+    if (!eff("output", "output_dir")) return ["output"];
+    /* The run there would refuse this Start (another input or reference): the line under
+       Run name says why, and Start stays off (2026-11-23). */
+    return runDirState?.refusal ? ["runname"] : [];
+  }
   return [];
 }
 
@@ -371,6 +400,8 @@ function inputReady(): boolean {
 function syncFlow() {
   const miss = missingOnStep(step);
   $("missing").hidden = !miss.length;
+  $("missing").textContent = miss.includes("runname")
+    ? "* Give another run name" : "* Missing required values";
   ($("next") as HTMLButtonElement).disabled = miss.length > 0;
   const active = lastPoll ? isActive(lastPoll) : false;
   ($("go") as HTMLButtonElement).disabled = active
@@ -420,6 +451,9 @@ async function describeInput(path = eff("input", "input_dir"), find = false) {
   }
   renderInputInfo();
   syncFlow();
+  /* The input Start would send may have moved (d.use): ask again whether the run of this
+     name would take it. */
+  void checkRunDir();
 }
 
 /** A MinKNOW run by the names typed into MinKNOW, its experiment and sample, when its
@@ -431,7 +465,7 @@ function renderInputInfo() {
   const d = inputInfo, el = $("inputinfo");
   if (!d || d.pending) { el.innerHTML = ""; return; }
   if (d.failed) { el.innerHTML = `<p class="dim err">${esc(d.failed)}</p>`; return; }
-  const what = kind === "bam" ? "BAM" : "POD5";
+  const what = readsBam(kind) ? "BAM" : "POD5";
   if (d.use) {
     const n: number = d.inputs ?? 0;
     const ok = kind === "live" || n > 0;
@@ -443,10 +477,31 @@ function renderInputInfo() {
     const moved = d.moved
       ? `<p class="dim">You picked ${esc(d.picked)}; mRNAspect reads the ${d.moved === "up"
           ? "run folder above it" : "folder below it"}.</p>` : "";
+    /* A BAM run of MinKNOW's folders. Whether the reads MinKNOW failed (bam_fail/) are in
+       is the operator's choice, made here, before the run. The box shows which of the two
+       folders is picked: the run folder reads both, bam_pass/ the passed reads only.
+       Changing it picks the other folder and asks Core again, so the count, the note and
+       what Start sends all come from Core. No box where Core names no second folder.
+       A live run of MinKNOW's BAM files has the same box: the run folder follows both
+       folders, bam_pass/ the passed reads only. Core offers it before any failed read
+       is written, since a live run is set up before its files exist. */
+    const nFail: number = (readsBam(kind) && d.bam) ? d.bam.fail.inputs : 0;
+    const withFail = (readsBam(kind) && d.bam && d.bam.switch)
+      ? `<label class="choice"><input type="checkbox" id="withfail"${d.bam.fail_included ? " checked" : ""}` +
+        `/><span><b>Include the failed reads</b><small>${num(nFail)} BAM file${nFail === 1 ? "" : "s"} ` +
+        `in bam_fail/${kind === "live" ? " so far" : ""}, the reads MinKNOW failed on their qscore` +
+        `</small></span></label>` : "";
+    const note = d.note ? `<p class="dim">${esc(d.note)}</p>` : "";
     el.innerHTML = `<div class="found${ok ? "" : " none"}"><b>${ok ? "✓" : "⚠"} ${esc(files)}</b>` +
       `<span class="dim">${esc(d.use)}</span></div>` +
       (facts.length ? `<div class="runfacts">${facts.map(f => `<span>${esc(f)}</span>`).join("")}</div>` : "") +
-      moved;
+      moved + withFail + note;
+    const box = el.querySelector<HTMLInputElement>("#withfail");
+    if (box) box.addEventListener("change", () => {
+      ($("input") as HTMLInputElement).value = d.bam.switch;
+      startedAs = null;
+      void describeInput(d.bam.switch);
+    });
     return;
   }
   const rows = (d.runs ?? []).map((run: any) =>
@@ -556,6 +611,9 @@ function setRefMode(m: "file" | "paste") {
   ($("refpaste") as HTMLElement).hidden = m !== "paste";
   renderRefHint();
   syncFlow();
+  /* A file's reference is compared with the earlier run's before Start; a pasted one
+     only at Start. */
+  void checkRunDir();
 }
 for (const b of Array.from(document.querySelectorAll<HTMLButtonElement>("[data-refmode]")))
   b.addEventListener("click", () => setRefMode(b.dataset.refmode as "file" | "paste"));
@@ -578,8 +636,13 @@ function modificationText(arm: unknown): string {
 /** The review card: what the run gets, field by field, a blank resolved as Core will. */
 function reviewRows(): [string, string][] {
   const rows: [string, string][] = [["Run", KIND_TEXT[kind].title]];
-  const found = inputInfo?.use ? ` (${num(inputInfo.inputs)} ${kind === "bam" ? "BAM" : "POD5"} files${
-    kind === "live" ? " so far" : ""})` : "";
+  /* A BAM run of MinKNOW's folders that has failed-read files: whether they are in.
+     bam_fail/ picked by itself is the failed reads only (Core's pass_included false). */
+  const failed = (readsBam(kind) && inputInfo?.bam && inputInfo.bam.fail.inputs > 0)
+    ? (inputInfo.bam.pass_included === false ? ", failed reads only"
+      : inputInfo.bam.fail_included ? ", failed reads included" : ", failed reads not included") : "";
+  const found = inputInfo?.use ? ` (${num(inputInfo.inputs)} ${readsBam(kind) ? "BAM" : "POD5"} files${
+    kind === "live" ? " so far" : ""}${failed})` : "";
   rows.push(["Input", (eff("input", "input_dir") || "missing") + found]);
   rows.push(["Reference", refMode === "paste" ? (pastedOk() ? `pasted, ${pastedSummary()}` : "missing")
     : eff("ref", "reference") || "missing"]);
@@ -588,13 +651,15 @@ function reviewRows(): [string, string][] {
   const declared = SAMPLE.map(([id, key, name]): [string, string] => [name, eff(id, key)])
     .filter(([, v]) => v);
   rows.push(...(declared.length ? declared : [["Sample", "none declared"] as [string, string]]));
-  if (kind !== "bam") {
+  if (!readsBam(kind)) {
     const sel = $("model") as HTMLSelectElement;
     rows.push(["Model", sel.value ? sel.selectedOptions[0].text
       : cfgModel ? `${base(cfgModel)} (config)` : "none set"]);
   }
   rows.push(["Output", eff("output", "output_dir") || "not set"]);
-  rows.push(["Run name", startedAs ?? (eff("runname", "output_name") || "a new run")]);
+  rows.push(["Run name", startedAs ?? ((eff("runname", "output_name") || "a new run")
+    + (runDirState?.refusal ? " (refused: the run of this name is of another input)"
+      : runDirState?.exists ? " (continues the earlier run of this name)" : ""))]);
   if (val("config").trim()) rows.push(["Configuration", base(val("config").trim())]);
   return rows;
 }
@@ -611,6 +676,9 @@ $("setupfields").addEventListener("input", () => syncFlow());
 /* The facts the run card shows, frozen when the run starts. */
 let runFacts: [string, string][] = [];
 let startedAs: string | null = null;
+/* What Core says of the folder a Start would write (checkRunDir), and its ticket. */
+let runDirState: any = null;
+let runDirGen = 0;
 /* The card the running run was started from: the start flow may move on to the next. */
 let runKind: Kind | null = null;
 /* How many inputs Core found in the run's folder before it started (describe_input),
@@ -653,7 +721,7 @@ $("go").addEventListener("click", async () => {
   runKind = kind;
   runInputsFound = inputInfo?.use ? inputInfo.inputs : null;
   runFacts = [];
-  if (kind !== "bam") {
+  if (!readsBam(kind)) {
     const sel = $("model") as HTMLSelectElement;
     runFacts.push(["Model", sel.value ? sel.selectedOptions[0].text : (cfgModel ? base(cfgModel) : "from config")]);
   }
@@ -756,8 +824,11 @@ async function refreshConfig() {
   let resolved: any;
   let changes: Record<string, unknown> = {};
   try {
+    /* Output dir and Run name blank here, so the placeholders below stay the config's
+       values; checkRunDir asks with them typed. */
     const answer = await invoke<any>("read_config",
-      { config: val("config") });
+      { config: val("config"), outputDir: "", runName: "", inputDir: "", reference: "",
+        mode: "", live: false });
     if (gen !== configGen) return;
     resolved = answer["resolved_config"];
     /* read_config passes Device's layer first and the operator's file last. */
@@ -812,6 +883,114 @@ async function refreshConfig() {
 }
 
 $("config").addEventListener("change", refreshConfig);
+
+/* --- whether Start continues an earlier run (2026-11-23) ------------------------------
+   A Run name that names a folder already in Output dir CONTINUES that run, and nothing
+   said so, before or during the run ("it's hard to know if the run is continued or not").
+   Core describes the folder a Start would write (`run_dir_state`, from the same
+   --print-config, given Output dir and Run name as start_qc passes them); the hint under
+   Run name and the review say what Start will do, and the run card what was carried over
+   (run_status.json's `continued`). `runDirState` is declared with the run's other state,
+   above reviewRows' first call. */
+const RUNNAME_HINT = $("runnamehint").textContent!;
+const plural = (k: number, w: string) => `${k} ${w}${k === 1 ? "" : "s"}`;
+
+async function checkRunDir() {
+  const gen = ++runDirGen;
+  let answer: any;
+  try {
+    /* What Start would send (start_qc's own values), so Core can say whether the run
+       there would refuse it. A pasted reference has no file yet: sent blank, and Core
+       compares it at Start. */
+    answer = await invoke<any>("read_config",
+      { config: val("config"), outputDir: val("output"), runName: val("runname"),
+        inputDir: val("input"), reference: refMode === "file" ? val("ref") : "",
+        mode: modeOf(kind), live: isRealtime() });
+  } catch {
+    /* refreshConfig says why Core could not be asked, over the flow; this hint falls
+       back to its general sentence rather than guess. */
+    if (gen !== runDirGen) return;
+    runDirState = null;
+    renderRunNameHint();
+    return;
+  }
+  if (gen !== runDirGen) return;
+  runDirState = answer["run_dir_error"] ? { error: String(answer["run_dir_error"]) }
+    : (answer["run_dir_state"] ?? null);
+  renderRunNameHint();
+  syncFlow();
+}
+
+/** How far the earlier run got, from what it left: "12 of 40 inputs, stopped". */
+function earlierRunText(s: any): string {
+  const got = s.inputs_processed == null ? ""
+    : s.inputs_total != null ? `${s.inputs_processed} of ${plural(s.inputs_total, "input")}`
+    : `${plural(s.inputs_processed, "input")} done`;
+  const ended = s.report === "run_end" ? "finished" : s.report === "user_abort" ? "stopped"
+    : s.report ? String(s.report) : "no final report";
+  return [got, ended].filter(Boolean).join(", ");
+}
+
+/** What Start carries over on this card. A live run restores what its manifest holds;
+ *  an offline run aligns and counts every input again, reusing a POD5's basecall. */
+function carriedText(s: any): string {
+  if (isRealtime()) return s.inputs_on_record
+    ? `the ${plural(s.inputs_on_record, "input")} on its record ${s.inputs_on_record === 1 ? "is" : "are"} restored, not processed again`
+    : "nothing is on its record to restore, so every input is processed again";
+  if (!readsBam(kind) && s.basecalls_cached)
+    return `every input is processed again, reusing the ${plural(s.basecalls_cached, "basecall")} on record where the POD5 file and the model are unchanged`;
+  return "every input is processed again";
+}
+
+function renderRunNameHint() {
+  const el = $("runnamehint");
+  const s = runDirState;
+  if (s?.error) { el.textContent = s.error; el.className = "dim err"; return; }
+  /* Core's own words for why the run there would refuse this Start: another input or
+     reference (run_input.py). Start stays off (missingOnStep). */
+  if (s?.refusal) {
+    el.textContent = `${s.refusal} Start is off until the run name or the input changes.`;
+    el.className = "dim err";
+    return;
+  }
+  if (!s?.exists) {
+    el.textContent = s ? "A new run. The name of an earlier run here would continue it."
+      : RUNNAME_HINT;
+    el.className = "dim";
+    return;
+  }
+  const unread = s.unreadable?.length ? ` Could not read: ${s.unreadable.join("; ")}.` : "";
+  const later = s.not_compared?.includes("reference")
+    ? " The pasted reference is compared with the earlier run's at Start." : "";
+  el.textContent = `Continues the earlier run of this name (${earlierRunText(s)}): `
+    + `${carriedText(s)}. Its report is replaced. For a separate run, give another name.`
+    + later + unread;
+  el.className = "dim warn";
+}
+
+/* Asked again whenever what Start would send can change: while typing, a moment after
+   the last key (the line read "A new run" for a name being typed over an earlier run's,
+   2026-11-23, since it was asked only when a field lost focus); at once on a change, a
+   pick, a card, or the folder Core moved the input to (describeInput). */
+let runDirTimer: number | undefined;
+function checkRunDirSoon() {
+  clearTimeout(runDirTimer);
+  runDirTimer = setTimeout(() => void checkRunDir(), 300) as unknown as number;
+}
+for (const id of ["output", "runname", "input", "ref"]) {
+  $(id).addEventListener("input", checkRunDirSoon);
+  $(id).addEventListener("change", () => void checkRunDir());
+}
+$("config").addEventListener("change", () => void checkRunDir());
+
+/** The run card's line for a run that continued an earlier one, or null for a new run. */
+function continuedText(c: any): string | null {
+  if (!c) return null;
+  if (c.inputs_restored != null)
+    return `the earlier run of this name · ${plural(c.inputs_restored, "input")} restored`;
+  return `the earlier run of this name · every input processed again` +
+    (c.basecalls_cached ? `, ${plural(c.basecalls_cached, "basecall")} on record` : "");
+}
 
 // =====================================================================================
 // Settings › Device (was This Mac): facts about the computer, saved by the app and passed
@@ -1152,7 +1331,12 @@ function renderRunCard(r: Poll) {
     meta.push(["Stopping", `${r.stopping_for_s} s`]);
   $("runmeta").innerHTML = meta.map(([k, v]) =>
     `<span class="kv strong"><span>${esc(k)}</span><span>${esc(v)}</span></span>`).join("");
-  $("runfacts").innerHTML = runFacts.map(([k, v]) =>
+  /* Said first and in the warning colour: a continued run's numbers include the earlier
+     run's inputs, and its report replaces the one that was there (2026-11-23). */
+  const cont = continuedText(st.continued);
+  $("runfacts").innerHTML =
+    (cont ? `<span class="kv warn"><span>Continues</span><span>${esc(cont)}</span></span>` : "") +
+    runFacts.map(([k, v]) =>
     `<span class="kv"><span>${esc(k)}</span><span>${esc(v)}</span></span>`).join("") +
     (res.error ? `<span class="err">${esc(res.error)}</span>` : "") +
     `<button class="linkbtn" id="opendetails">Details</button>`;
@@ -2074,7 +2258,12 @@ async function tick() {
      figures arrived: a redraw on every 1 s tick would reset the charts' zoom. */
   if (page === "run" && (r.changed || loaded || !was || was.state !== r.state)) renderCurrentPanel();
   // "stopping" is still an ACTIVE run; the timer stops only when the run has ended.
-  if (!active && timer !== undefined) { clearInterval(timer); timer = undefined; }
+  if (!active && timer !== undefined) {
+    clearInterval(timer);
+    timer = undefined;
+    /* The folder now exists: the same name would continue this run, so say it. */
+    void checkRunDir();
+  }
 }
 
 async function loadFigures(): Promise<boolean> {

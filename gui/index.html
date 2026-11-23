@@ -617,6 +617,9 @@
                 <!-- Any level of a MinKNOW run will do: Core says which folder it reads
                      (describe_input), how many inputs it holds, and lists the runs below. -->
                 <div data-step="input" class="field">
+                  <!-- A live run only: what it follows. POD5 files are basecalled here;
+                       BAM files are the ones MinKNOW basecalls, bam_pass/ and bam_fail/. -->
+                  <span class="segs" id="livesource" role="radiogroup" aria-label="Files to follow" hidden><button type="button" class="seg" data-livesource="pod5" role="radio" aria-checked="true">POD5 files</button><button type="button" class="seg" data-livesource="bam" role="radio" aria-checked="false">BAM files</button></span>
                   <label for="input" id="inputlabel">BAM folder</label>
                   <div class="row"><input id="input" placeholder="BAMs of basecalled reads, aligned or not; mRNAspect aligns them"
                     /><button type="button" class="btn pick" data-pick="dir" data-for="input">Browse…</button
@@ -742,11 +745,12 @@
     └── my_sample/
         └── <b>20261112_1434_MN12345_FBA12345_1a2b3c4d/</b>    ← Live run
             ├── <b>pod5/</b>                                   ← POD5 files
-            └── <b>bam_pass/</b>                               ← BAM files, if MinKNOW basecalled</pre>
+            ├── <b>bam_pass/</b>                               ← BAM files, if MinKNOW basecalled
+            └── <b>bam_fail/</b>                               ← BAM files of the reads it failed</pre>
                 <dl class="review">
-                  <dt>Live run</dt><dd>the run folder: the one that holds pod5/</dd>
+                  <dt>Live run</dt><dd>the run folder: the one that holds pod5/, and bam_pass/ when MinKNOW basecalls. It follows the POD5 files and basecalls them, or the BAM files MinKNOW writes: both folders, or bam_pass/ or bam_fail/ alone when that one is picked</dd>
                   <dt>POD5 files</dt><dd>a folder that holds .pod5 files</dd>
-                  <dt>BAM files</dt><dd>a folder that holds .bam files, aligned or not</dd>
+                  <dt>BAM files</dt><dd>a folder that holds .bam files, aligned or not; or the run folder, which reads bam_pass/ and bam_fail/ together</dd>
                 </dl>
                 <p>Any of these levels will do: mRNAspect finds the folder it reads, says how many files it holds, and lists the runs when there are several. <b>Find MinKNOW runs</b> looks in MinKNOW's data folder for you.</p>
               </div>
@@ -849,12 +853,12 @@
                  (2026-11-13), printed in full because MIT asks that its notice travel with
                  every copy; checked by test_gui_help_about.py. -->
             <div class="card narrow legal">
-              <p id="copyright">Copyright © 2026 Qbiolab.</p>
+              <p id="copyright">Copyright © 2026 Seoul National University.</p>
               <p id="licence">Licence: MIT. This licence covers mRNAspect; the software listed below keeps its own.</p>
               <details class="licencetext"><summary>MIT License</summary>
 <pre>MIT License
 
-Copyright (c) 2026 Qbiolab
+Copyright (c) 2026 Seoul National University
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

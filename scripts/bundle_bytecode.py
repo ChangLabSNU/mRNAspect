@@ -25,8 +25,17 @@ module this could not compile still leaves the app as it was.
     python3 scripts/bundle_bytecode.py --check <env>   verify only; writes nothing
 
 "Current" means: a .pyc for this interpreter, unchecked hash-based, whose hash IS the hash
-of the source beside it. So a second run compiles only what changed (Core, which is
-installed again at every staging), and a .pyc left over from an older source is caught.
+of the source beside it, and which records the source's name as its path INSIDE the
+environment. So a second run compiles only what changed (Core, which is installed again
+at every staging), and a .pyc left over from an older source is caught.
+
+The name matters because a .pyc holds the file name of its source for tracebacks, and by
+default that is the full path at the moment of compiling: the staging folder, under the
+build account's home, in every compiled file of the released app. Compiled here with the
+path relative to the environment (`lib/python3.x/...`), a .pyc says nothing of where it
+was built. Python puts the real path back when it loads the module beside its source, so
+a traceback in the app still names the file where it is. A .pyc whose hash matches but
+which records another name is not current: it is compiled again.
 
 `stage_bundle_env.sh` runs the first as its last step; `check_bundle.sh` runs the second
 on the built .app. Exit 0: every source that can be compiled has current bytecode. Exit 1:
@@ -42,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
+import marshal
 import os
 import py_compile
 import sys
@@ -73,13 +83,19 @@ def cache_of(source: Path) -> Path:
     return Path(importlib.util.cache_from_source(str(source), optimization=""))
 
 
-def state(source: Path) -> str:
+def recorded_name(source: Path, env: Path) -> str:
+    """The file name a .pyc of `source` is to hold: its path inside the environment."""
+    return source.relative_to(env).as_posix()
+
+
+def state(source: Path, env: Path) -> str:
     """`CURRENT`, or what is wrong with the .pyc of `source`, in words."""
     try:
         with open(cache_of(source), "rb") as fh:
-            head = fh.read(16)
+            data = fh.read()
     except FileNotFoundError:
         return "no compiled file"
+    head = data[:16]
     if len(head) < 16 or head[:4] != importlib.util.MAGIC_NUMBER:
         return "compiled by another Python"
     flags = int.from_bytes(head[4:8], "little")
@@ -89,6 +105,12 @@ def state(source: Path) -> str:
         return "compared with its source at every import"
     if head[8:16] != importlib.util.source_hash(source.read_bytes()):
         return "compiled from another version of the source"
+    try:
+        name = marshal.loads(data[16:]).co_filename
+    except (ValueError, EOFError, TypeError, AttributeError):
+        return "not a whole compiled file"
+    if name != recorded_name(source, env):
+        return "records the folder it was compiled in"
     return CURRENT
 
 
@@ -104,8 +126,8 @@ def cannot_compile(source: Path) -> str | None:
     return None
 
 
-def compile_one(source: Path) -> str | None:
-    """Write the unchecked hash-based .pyc of `source`.
+def compile_one(source: Path, env: Path) -> str | None:
+    """Write the unchecked hash-based .pyc of `source`, naming it by its path in `env`.
 
     Returns:
         `None` when written, or why the source does not compile.
@@ -116,8 +138,8 @@ def compile_one(source: Path) -> str | None:
     """
     try:
         py_compile.compile(
-            str(source), cfile=str(cache_of(source)), doraise=True,
-            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+            str(source), cfile=str(cache_of(source)), dfile=recorded_name(source, env),
+            doraise=True, invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
     except py_compile.PyCompileError as exc:
         return exc.msg.strip().splitlines()[-1]
     except (ValueError, RecursionError) as exc:
@@ -143,14 +165,14 @@ def run(env: Path, write: bool) -> int:
     not_python: list[tuple[Path, str]] = []
     wrong: list[tuple[Path, str]] = []
     for source in files:
-        found = state(source)
+        found = state(source, env)
         if found == CURRENT:
             continue
         if write:
-            why = compile_one(source)
+            why = compile_one(source, env)
             if why is None:
                 written += 1
-                found = state(source)
+                found = state(source, env)
                 if found != CURRENT:    # read back: what is verified is the file
                     wrong.append((source, found))
             else:
@@ -174,7 +196,8 @@ def run(env: Path, write: bool) -> int:
               f"app runs", file=sys.stderr)
         return 1
     done = len(files) - len(not_python)
-    print(f"  ok    {done} sources have bytecode that does not depend on file times"
+    print(f"  ok    {done} sources have bytecode that does not depend on file times "
+          f"and names no folder outside the environment"
           + (f" ({written} compiled now)" if write else "")
           + (f"; {len(not_python)} do not compile and cannot be imported"
              if not_python else ""))

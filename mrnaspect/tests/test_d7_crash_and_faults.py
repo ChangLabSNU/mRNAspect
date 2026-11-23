@@ -23,7 +23,8 @@ import pytest
 
 from mrnaspect.tests.conftest import pod5_ready
 from mrnaspect.main import load_config
-from mrnaspect.realtime.main import PARTIAL_SUFFIX, RealtimePipeline
+from mrnaspect.realtime.main import RealtimePipeline
+from mrnaspect.wrappers._shell import PARTIAL_PREFIX, unfinished_outputs
 from mrnaspect.realtime.manifest import (
     MANIFEST_NAME,
     IngestManifest,
@@ -138,8 +139,8 @@ def _partial_run(run_dir: Path, out: Path, curlcake_ref: Path, fixture_bam: Path
 
 
 def _crash_mid_basecall(out: Path, run_dir: Path) -> None:
-    """Killed while the server was streaming chunks: a `.partial` dir of debris."""
-    d = out / "basecall_cache" / f"basecall_ghost{PARTIAL_SUFFIX}"
+    """Killed while the server was streaming chunks: a `partial-` dir of debris."""
+    d = out / "basecall_cache" / f"{PARTIAL_PREFIX}basecall_ghost"
     d.mkdir(parents=True, exist_ok=True)
     (d / "chunk_0_0.bam").write_text("half a chunk")
 
@@ -164,10 +165,10 @@ def _crash_after_record_before_align(out: Path, run_dir: Path) -> None:
 
 
 def _crash_mid_align(out: Path, run_dir: Path) -> None:
-    """`samtools sort` killed: a truncated BAM under `.partial` (C2 quarantines it there)."""
+    """`samtools sort` killed: a truncated BAM under `partial-` (C2 quarantines it there)."""
     cache = out / "basecall_cache"
     cache.mkdir(parents=True, exist_ok=True)
-    (cache / f"aligned_ghost.bam{PARTIAL_SUFFIX}").write_text("truncated BAM")
+    (cache / f"{PARTIAL_PREFIX}aligned_ghost.bam").write_text("truncated BAM")
 
 
 def _crash_after_bam_before_manifest(out: Path, run_dir: Path) -> None:
@@ -244,10 +245,10 @@ def test_boot_clears_partial_debris_from_every_crash_point(
     out.mkdir()
     _crash_mid_basecall(out, run_dir)
     _crash_mid_align(out, run_dir)
-    assert list(out.rglob(f"*{PARTIAL_SUFFIX}*"))
+    assert len(unfinished_outputs(out / "basecall_cache")) == 2
 
     _pipe(run_dir, out, curlcake_ref, fixture_bam).boot()
-    assert not list(out.rglob(f"*{PARTIAL_SUFFIX}*"))
+    assert not list(out.rglob(f"{PARTIAL_PREFIX}*"))
 
 
 # ---------------------------------------------------------------------------

@@ -304,10 +304,17 @@ class AnalysisEngine:
             self._fasta_index_dir = str(index_dir)
             fai, gzi = index_dir / "reference.fai", index_dir / "reference.gzi"
             # A .gzi is written only for a bgzip-compressed reference.
-            pysam.faidx(str(self.reference), "--fai-idx", str(fai), "--gzi-idx", str(gzi))
-            self._fasta = pysam.FastaFile(
-                str(self.reference), filepath_index=str(fai),
-                filepath_index_compressed=str(gzi) if gzi.exists() else None)
+            # This is first reached from inside the per-read guard. A reference that
+            # cannot be indexed is wrong for the whole run, so it is a ReferenceError,
+            # which that guard lets through, and never one bad read after another.
+            try:
+                pysam.faidx(str(self.reference), "--fai-idx", str(fai), "--gzi-idx", str(gzi))
+                self._fasta = pysam.FastaFile(
+                    str(self.reference), filepath_index=str(fai),
+                    filepath_index_compressed=str(gzi) if gzi.exists() else None)
+            except (pysam.SamtoolsError, OSError, ValueError) as exc:
+                raise ReferenceError(
+                    f"Reference FASTA {self.reference} could not be indexed: {exc}") from exc
         return self._fasta
 
     def _check_bam_matches_reference(self, bam: pysam.AlignmentFile) -> None:

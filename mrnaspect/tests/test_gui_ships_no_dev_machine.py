@@ -103,6 +103,7 @@ def test_the_crate_s_author_is_the_copyright_holder_not_a_person():
         pytest.skip("no Cargo.toml in this checkout")
     authors = re.search(r"^authors\s*=\s*\[(.*)\]\s*$", _CARGO.read_text(), re.M)
     assert authors, "Cargo.toml has no one-line `authors`"
-    holder = re.search(r"Copyright \(c\) \d{4} (\w+)", (_GUI.parent / "LICENSE").read_text())
+    holder = re.search(r"^Copyright \(c\) \d{4} (.+)$", (_GUI.parent / "LICENSE").read_text(),
+                       re.M)
     assert holder, "the LICENSE names no copyright holder"
     assert authors.group(1).strip() == f'"{holder.group(1)}"', authors.group(1)

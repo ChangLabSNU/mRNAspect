@@ -11,8 +11,16 @@ for Inputs, and nothing said whether the folder had been recognised at all
 - ``inputs_processed``: inputs done.
 - ``inputs_total``: the fixed set's size, or ``None`` on a live run, which has none.
 - ``current_input``: the input in progress, or ``None``.
+- ``continued``: ``None`` for a new run. For a run that continues an earlier one in the
+  same folder (the same run name), what it carries over: the live driver's
+  ``inputs_restored`` (inputs replayed from its manifest, not processed again), or the
+  offline driver's ``basecalls_cached`` (basecalls on record, reused where the POD5 and
+  the model are unchanged; every input is aligned and counted again). Until this field,
+  nothing told the operator a run had continued rather than started (2026-11-23).
 
-It carries no QC number and nothing reads it back: it is a progress line for a surface.
+It carries no QC number. The only reader besides a surface is
+:mod:`~mrnaspect.runtime.run_dir_state`, which says how far an earlier attempt got
+before a run of the same name continues it.
 """
 
 from __future__ import annotations
@@ -22,13 +30,16 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Mapping, Optional
 
 RUN_STATUS_NAME = "run_status.json"
+#: The keys ``continued`` may hold, one per driver.
+CONTINUED_KEYS = ("inputs_restored", "basecalls_cached")
 
 
 def write_run_status(output_dir: Path | str, *, found: int, processed: int,
-                     total: Optional[int], current: Optional[str]) -> Path:
+                     total: Optional[int], current: Optional[str],
+                     continued: Optional[Mapping[str, int]] = None) -> Path:
     """Write the run's progress atomically and return the file's path.
 
     Atomic (a temp file, then ``os.replace``) so a reader never sees half a file; the
@@ -36,13 +47,20 @@ def write_run_status(output_dir: Path | str, *, found: int, processed: int,
     and its main thread.
 
     Raises:
-        ValueError: a count below zero, or more done than found.
+        ValueError: a count below zero, or more done than found; a ``continued`` key
+            other than :data:`CONTINUED_KEYS`, or a count in it below zero.
     """
     if found < 0 or processed < 0 or processed > found:
         raise ValueError(f"inconsistent counts: found={found}, processed={processed}")
+    if continued is not None:
+        unknown = set(continued) - set(CONTINUED_KEYS)
+        if unknown or any(int(n) < 0 for n in continued.values()):
+            raise ValueError(f"continued must hold counts of {CONTINUED_KEYS}, got "
+                             f"{dict(continued)}")
     out = Path(output_dir) / RUN_STATUS_NAME
     payload = {"inputs_found": found, "inputs_processed": processed,
                "inputs_total": total, "current_input": current,
+               "continued": dict(continued) if continued is not None else None,
                "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}
     tmp = out.with_name(f".{RUN_STATUS_NAME}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(payload), encoding="utf-8")

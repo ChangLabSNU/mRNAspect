@@ -16,6 +16,11 @@ Where a licence text comes from, in this order: the package's own folder in the 
 cache (`info/licenses/`); a licence file the package installs; another output of the same
 recipe (freetype holds the texts for libfreetype6); a copy kept in `scripts/notices/`.
 
+A package conda did not install has no record in `conda-meta`: one installed from a wheel
+(WeasyPrint, from PyPI, since conda-forge had no fixed version). Those are read from their
+`.dist-info` in site-packages, which names the package, its licence, and holds its text.
+Core's own is not listed: this file is about other people's software.
+
 What cannot be found is written into the file under INCOMPLETE and printed as a warning.
 Writing still succeeds, so a developer's `tauri dev` is not stopped by it; `--check`, which
 `check_bundle.sh` runs on the built .app before a release, fails on it.
@@ -25,6 +30,7 @@ Standard library only: it runs on the interpreter of the environment it describe
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -41,6 +47,9 @@ HERE = Path(__file__).resolve().parent
 #: Texts for packages that carry none; each is accounted for in its README.
 KEPT = HERE / "notices"
 RULE = "-" * 80
+
+#: Core's own distribution, which the file does not list.
+OURS = "mrnaspect"
 
 #: Where a licence offers a choice, the one taken, and what else a reader should know.
 TAKEN: dict[str, tuple[str, str]] = {
@@ -150,8 +159,77 @@ def _freetype_credit(env: Path, texts: list[tuple[str, str]]) -> tuple[str, str]
     return " ".join(sentence.split()).replace("<year>", year.group(1)), ""
 
 
+def _plain(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def wheel_installs(env: Path) -> list[dict]:
+    """The packages in ``env`` that conda did not install, from their ``.dist-info``.
+
+    conda marks the Python packages it installs (``INSTALLER`` says ``conda``); anything
+    else came from a wheel. Left out: Core's own, and a ``.dist-info`` whose package is no
+    longer there (a record left behind, with none of the files it lists).
+
+    Returns:
+        One dict per package: ``name``, ``version``, ``licence``, ``home``, ``info``.
+    """
+    found = []
+    for info in sorted(env.glob("lib/python3*/site-packages/*.dist-info")):
+        installer = info / "INSTALLER"
+        if installer.is_file() and installer.read_text().strip() == "conda":
+            continue
+        fields: dict[str, list[str]] = {}
+        try:
+            head = (info / "METADATA").read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in head.split("\n\n", 1)[0].splitlines():
+            key, sep, value = line.partition(": ")
+            if sep and not line.startswith((" ", "\t")):
+                fields.setdefault(key, []).append(value.strip())
+        name, version = fields.get("Name", [""])[0], fields.get("Version", [""])[0]
+        if not name or not version or _plain(name) == OURS:
+            continue
+        record = info / "RECORD"
+        if record.is_file():
+            listed = [line.split(",")[0] for line in record.read_text().splitlines() if line]
+            # Compiled files do not count: a .pyc outlives the module it was made from.
+            if not any((info.parent / f).is_file() for f in listed
+                       if not f.startswith(info.name + "/") and not f.endswith(".pyc")):
+                continue
+        classifiers = [c.split(" :: ")[-1] for c in fields.get("Classifier", [])
+                       if c.startswith("License ::")]
+        licence = (fields.get("License-Expression") or classifiers
+                   or [v for v in fields.get("License", []) if len(v) < 80] or ["not stated"])[0]
+        home = next((u.split(", ", 1)[1] for u in fields.get("Project-URL", [])
+                     if u.lower().startswith("homepage, ")), fields.get("Home-page", [""])[0])
+        found.append({"name": name, "version": version, "licence": licence, "home": home,
+                      "info": info})
+    return found
+
+
+def _wheel_entry(env: Path, package: dict) -> tuple[Entry, list[str]]:
+    """The notice of one wheel-installed package, and what could not be found for it."""
+    info: Path = package["info"]
+    entry = Entry(package["name"], package["version"], package["licence"])
+    entry.lines += [f"Licence: {entry.licence}",
+                    "Installed from: its wheel (PyPI); conda has no record of it"]
+    if package["home"]:
+        entry.lines.append(f"Home: {package['home']}")
+    texts = _texts_under(info / "licenses") if (info / "licenses").is_dir() else []
+    texts += [(p.name, _read(p)) for p in sorted(info.iterdir())
+              if p.is_file() and re.match(r"(?i)(licen[sc]e|copying|notice)", p.name)]
+    if texts:
+        entry.texts = texts
+        entry.lines.append(f"Licence text from: {info.relative_to(env).as_posix()}")
+        return entry, []
+    entry.lines.append("Licence text: NOT FOUND.")
+    return entry, [f"no licence text was found for {entry.name} {entry.version} "
+                   f"(looked in {info.relative_to(env).as_posix()})"]
+
+
 def collect_env(env: Path) -> tuple[list[Entry], list[str]]:
-    """The conda packages recorded in ``env``.
+    """The packages in ``env``: conda's, by its records, and those installed from a wheel.
 
     Returns:
         The entries, by name, and what could not be found (empty when nothing is missing).
@@ -233,6 +311,11 @@ def collect_env(env: Path) -> tuple[list[Entry], list[str]]:
             if lacking:
                 missing.append(lacking)
         entries.append(entry)
+    for package in wheel_installs(env):
+        entry, lacking = _wheel_entry(env, package)
+        entries.append(entry)
+        missing += lacking
+    entries.sort(key=lambda e: (e.name.lower(), e.version))
     return entries, missing
 
 
@@ -296,8 +379,10 @@ def collect_page(root: Path) -> tuple[list[Entry], list[str]]:
     """The JavaScript the page loads: its npm packages, and plotly's bundle.
 
     Development dependencies (vite, TypeScript, the Tauri CLI) build the page and are not
-    in it. plotly is one file under `gui/public/`: its own header, the MIT permission
-    notice that header names, and the notices of the code it bundles, as it states them.
+    in it. plotly is one file under `gui/public/`: its own header, then the licence texts
+    of plotly.js and of every package inside the bundle, from the file kept beside the
+    copy the report embeds (scripts/vendor_plotly_notices.py). The bundle's own mentions
+    of what it carries are one line each and name no copyright holder for some.
     """
     gui = root / "gui"
     entries, missing = [], []
@@ -344,26 +429,27 @@ def collect_page(root: Path) -> tuple[list[Entry], list[str]]:
     bundles = sorted((gui / "public").glob("plotly-*.min.js")) if (gui / "public").is_dir() else []
     if not bundles:
         missing.append("plotly's bundle is not under gui/public/")
-    ours = root / "LICENSE"
-    permission = ours.read_text() if ours.is_file() else ""
-    permission = permission[permission.find("Permission is hereby granted"):] \
-        if "Permission is hereby granted" in permission else ""
     for bundle in bundles:
         source = bundle.read_text(encoding="utf-8", errors="replace")
         header = re.match(r"\s*/\*\*[\s\S]*?\*/", source)
         version = re.search(r"v(\d+\.\d+\.\d+)", header.group(0)) if header else None
-        if not header or not version or "MIT" not in header.group(0) or not permission:
-            missing.append(f"plotly's notice could not be written from gui/public/{bundle.name} "
-                           "(its header, its version, or this checkout's LICENSE)")
+        kept = root / "mrnaspect" / "reporting" / "assets" / (
+            bundle.name.removesuffix(".min.js") + ".LICENSES.txt")
+        notices = kept.read_text(encoding="utf-8") if kept.is_file() else ""
+        # The kept file names the bundle it was written for by its sha256, so the
+        # notices of another build cannot stand in for this one's.
+        digest = hashlib.sha256(bundle.read_bytes()).hexdigest()
+        if not header or not version or digest not in notices:
+            missing.append(f"plotly's notices could not be written for gui/public/{bundle.name}: "
+                           f"{kept.relative_to(root)} is not there, or was written for "
+                           "another file (scripts/vendor_plotly_notices.py writes it)")
             continue
         entry = Entry("plotly.js", version.group(1), "MIT")
-        entry.lines += ["Licence: MIT", f"File: gui/public/{bundle.name}"]
+        entry.lines += ["Licence: MIT", f"File: gui/public/{bundle.name}",
+                        "It carries other packages; the terms of each follow plotly's own."]
         entry.texts = [("the bundle's own header", header.group(0).strip() + "\n"),
-                       ("the MIT licence that header names: its permission notice",
-                        permission.rstrip() + "\n")]
-        entry.texts += [("notices of the code it bundles, as the bundle states them",
-                         block.strip() + "\n")
-                        for block in re.findall(r"/\*![\s\S]*?\*/", source)]
+                       (f"{kept.name}: the terms of plotly.js and of each package the "
+                        "bundle carries", notices.rstrip() + "\n")]
         entries.append(entry)
     return entries, missing
 
@@ -422,6 +508,11 @@ def check(env: Path) -> list[str]:
             if f"\n{RULE}\n{heading}\n{RULE}\n" not in text:
                 found.append(f"{heading} is in the environment and not in {NAME}: "
                              "the file was written for another one")
+    for package in wheel_installs(env):
+        heading = f"{package['name']} {package['version']}"
+        if f"\n{RULE}\n{heading}\n{RULE}\n" not in text:
+            found.append(f"{heading} is in the environment (installed from a wheel) and "
+                         f"not in {NAME}: the file was written for another one")
     return found
 
 

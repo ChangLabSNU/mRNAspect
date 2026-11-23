@@ -151,7 +151,7 @@ def test_with_every_construct_listed_there_is_no_per_construct_figure(runs) -> N
 def test_the_pdf_draws_no_figures_for_it(runs) -> None:
     """The PDF is the archived artifact, so it is read, not inferred from figures.json. A
     construct's figure block opens with its name and the first figure's title."""
-    pypdf = pytest.importorskip("pypdf")
+    import pypdf  # not importorskip: without the reader this must fail, not skip
 
     def pdf(run: Path) -> str:
         return re.sub(r"\s+", " ", " ".join(

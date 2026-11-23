@@ -23,9 +23,11 @@ panel reference holds constructs the sample may not, and the aligner puts a few 
 them anyway: on a test input carrying six of run 1's fifteen constructs, six others got
 1–12 reads each, and each took a section and every per-construct figure.
 
-`on_error: skip` keeps a run alive past one unreadable input; `abort` stops. Either way
-the skipped inputs are named in the report, because a POD5 that failed to basecall
-contributes nothing to any module and its absence otherwise looks like it never existed.
+`on_error: skip` keeps a run alive past one unreadable input; `on_error: raise` stops at
+the first one. Those are the only two values, and any other is refused before the run
+starts. Under `skip` the inputs left out are named in the report, because a POD5 that
+failed to basecall contributes nothing to any module and its absence otherwise looks
+like it never existed.
 
 ## basecall.emit_moves
 
@@ -172,6 +174,22 @@ on an m1Ψ product, the commonest production case.
 
 Decimation is **stride-based** (`index % stride == 0`), not random, and off by default. A
 random sample would make two runs over the same data disagree.
+
+## mode and realtime.barcode, for a live run
+
+A live run (`mrnaspect-realtime`) follows one kind of file and must be told which:
+`--mode pod5` or `--mode bam`, or `mode:` in a config of your own. The shipped default is
+not used for it. A run folder holds `pod5/` and, when MinKNOW basecalls, `bam_pass/` and
+`bam_fail/`; a run started on the default would have followed MinKNOW's BAM files where
+the operator meant this pipeline's basecalls, or the other way round.
+
+In `bam` mode the two BAM folders are followed together when the run folder is given, and
+only the one given when `--input-dir` is the run's `bam_pass/` or `bam_fail/` (the run-end
+marker and the sequencing summary are still read from the run folder). A BAM is read once its
+writer has closed it (its size is stable and it ends with the BGZF end-of-file block).
+`realtime.barcode` (`--barcode`) names the one barcode a live BAM run of a barcoded run
+follows: the folder of that name under `bam_pass/` and under `bam_fail/`. Without it such
+a run stops, naming the barcode folders it found; barcodes are never read together.
 
 ## Removed settings
 

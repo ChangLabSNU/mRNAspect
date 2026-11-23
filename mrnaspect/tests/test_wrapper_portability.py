@@ -80,6 +80,14 @@ GNU_ONLY = [
      "sed -i.bak, then rm the .bak; or a temp file and mv"),
     (r"\bgrep\s+-P\b", "grep -P (GNU only)", "grep -E, or awk"),
     (r"\bdate\s+-d\b", "date -d (GNU; BSD uses -v/-j -f)", "compute in Python"),
+    # Both found by the first run of the suite on a Mac, 2026-11-23. Neither fails where it
+    # is written: zcat prints an error and the pipe after it counts 0 lines, and sed
+    # matches nothing and prints nothing.
+    (r"\bzcat\b", "zcat (on macOS it reads compress(1) files and looks for <name>.Z)",
+     "gzip -dc"),
+    (r"\bsed\b(?![^\n]*\s-E\b)[^\n|]*\\[+?]",
+     r"\+ or \? in a basic regular expression of sed (GNU extension; BSD sed reads a "
+     r"literal character)", "sed -E with + and ?"),
 ]
 
 

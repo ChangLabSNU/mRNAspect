@@ -77,14 +77,14 @@ def _run_align(prefix: str, reference: Path, out_dir: Path) -> subprocess.Comple
 def test_align_publishes_a_complete_indexed_bam(
     tmp_path: Path, fixture_bam: Path, curlcake_ref: Path
 ) -> None:
-    """Happy path: every read survives, and no ``.partial`` is left behind."""
+    """Happy path: every read survives, and no ``partial-`` output is left behind."""
     _make_ubam_dir(tmp_path, fixture_bam, "smoke")
     proc = _run_align("smoke", curlcake_ref, tmp_path)
     assert proc.returncode == 0, proc.stderr
 
     bam = tmp_path / "aligned_smoke.bam"
     assert bam.exists() and (tmp_path / "aligned_smoke.bam.bai").exists()
-    assert not list(tmp_path.glob("*.partial*")), "publish left staging files behind"
+    assert not list(tmp_path.glob("partial-*")), "publish left staging files behind"
 
     with pysam.AlignmentFile(fixture_bam, "rb") as f:
         expected = sum(1 for _ in f)
@@ -100,7 +100,7 @@ def test_a_failed_align_leaves_no_canonical_bam(
     The half-written output is a *valid, readable* BAM — it just holds half the reads.
     Before C2 it landed at the canonical path, so a restart (or a SIGKILL, where there is
     no exit code to catch at all) would ingest 50% of the run and report it as the whole
-    thing. Now it is quarantined under ``.partial`` and the canonical path stays absent,
+    thing. Now it is quarantined under ``partial-`` and the canonical path stays absent,
     which the caller reads as a plain cache miss.
     """
     ubam_dir = _make_ubam_dir(tmp_path, fixture_bam, "broken")
@@ -117,7 +117,7 @@ def test_a_failed_align_leaves_no_canonical_bam(
 
     # The quarantined artifact is genuinely dangerous, which is why it must not be
     # published: it opens cleanly and is silently short.
-    partial = tmp_path / "aligned_broken.bam.partial"
+    partial = tmp_path / "partial-aligned_broken.bam"
     if partial.exists():
         with pysam.AlignmentFile(partial, "rb", check_sq=False) as f:
             short = sum(1 for _ in f)
@@ -129,16 +129,16 @@ def test_a_failed_align_leaves_no_canonical_bam(
 def test_align_clears_a_stale_partial_from_an_earlier_crash(
     tmp_path: Path, fixture_bam: Path, curlcake_ref: Path
 ) -> None:
-    """A crash leaves a ``.partial``; the next run must overwrite it, not trip on it."""
+    """A crash leaves a ``partial-`` BAM; the next run must overwrite it, not trip on it."""
     _make_ubam_dir(tmp_path, fixture_bam, "retry")
-    (tmp_path / "aligned_retry.bam.partial").write_bytes(b"garbage from a previous crash")
-    (tmp_path / "aligned_retry.bam.partial.bai").write_bytes(b"stale index")
+    (tmp_path / "partial-aligned_retry.bam").write_bytes(b"garbage from a previous crash")
+    (tmp_path / "partial-aligned_retry.bam.bai").write_bytes(b"stale index")
 
     proc = _run_align("retry", curlcake_ref, tmp_path)
     assert proc.returncode == 0, proc.stderr
     with pysam.AlignmentFile(tmp_path / "aligned_retry.bam", "rb") as f:
         assert sum(1 for _ in f) > 0
-    assert not list(tmp_path.glob("*.partial*"))
+    assert not list(tmp_path.glob("partial-*"))
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +163,7 @@ def test_basecall_script_never_streams_into_the_canonical_dir() -> None:
     assert '-s "$PARTIAL_OUT"' in text
     assert '-s "$BASECALL_OUT"' not in text, (
         "run_basecall.sh streams chunks into the canonical dir again — see C2")
-    # The rename must be guarded by a prior rm, or `mv A.partial A` NESTS instead of
+    # The rename must be guarded by a prior rm, or `mv partial-A A` NESTS instead of
     # replacing when A already exists.
     assert 'rm -rf "$BASECALL_OUT"' in text
     assert 'mv "$PARTIAL_OUT" "$BASECALL_OUT"' in text

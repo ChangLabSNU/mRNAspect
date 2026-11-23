@@ -25,11 +25,25 @@ class ReferenceError(ValueError):
     """The reference FASTA is unusable. Always raised, never warned."""
 
 
-def _open_maybe_gzip(path: Path) -> IO[str]:
-    """Open plain or gzip/bgzip FASTA transparently (minimap2 accepts both)."""
+def compression(path: Path) -> str:
+    """``"plain"``, ``"bgzf"`` or ``"gzip"``, by the file's first bytes.
+
+    BGZF is gzip whose members carry a ``BC`` extra subfield (SAM specification, 4.1),
+    which is what lets samtools seek in it. Ordinary gzip has none.
+    """
     with open(path, "rb") as probe:
-        magic = probe.read(2)
-    if magic == _GZIP_MAGIC:
+        head = probe.read(16)
+    if head[:2] != _GZIP_MAGIC:
+        return "plain"
+    # FLG.FEXTRA set, then the first subfield: SI1 'B', SI2 'C', SLEN 2.
+    if len(head) == 16 and head[3] & 0x04 and head[12:16] == b"BC\x02\x00":
+        return "bgzf"
+    return "gzip"
+
+
+def _open_maybe_gzip(path: Path) -> IO[str]:
+    """Open a plain or BGZF FASTA as text (BGZF is valid gzip, so gzip reads it)."""
+    if compression(path) != "plain":
         return gzip.open(path, "rt", encoding="utf-8", errors="replace")
     return open(path, "r", encoding="utf-8", errors="replace")
 
@@ -79,12 +93,13 @@ def reference_contigs(reference: Path | str, *, max_records: int = 100_000) -> l
     ``@SQ`` ``SN:``, so these are the names reads carry as ``reference_name``.
 
     Args:
-        reference: Path to a plain or gzipped FASTA.
+        reference: Path to a FASTA, plain or BGZF-compressed (bgzip).
         max_records: Refuse references with more contigs than this. A construct panel has
             a handful; a whole transcriptome would allocate one pileup per contig.
 
     Raises:
-        ReferenceError: blank, missing, unreadable, empty, not FASTA, over
+        ReferenceError: blank, missing, unreadable, empty, compressed with ordinary
+            gzip, not FASTA, over
             ``max_records``, with a nameless or empty record, duplicate contig names
             (which would merge two constructs' pileups), or a sequence character other
             than A, C, G, T or U (either case).
@@ -104,6 +119,18 @@ def reference_contigs(reference: Path | str, *, max_records: int = 100_000) -> l
         raise ReferenceError(f"Reference FASTA is not a file: {path}")
     if path.stat().st_size == 0:
         raise ReferenceError(f"Reference FASTA is empty (0 bytes): {path}")
+    # minimap2 reads ordinary gzip, so the alignment would succeed; the engine then
+    # cannot index the reference, and every read would be put down as a bad read.
+    try:
+        kind = compression(path)
+    except OSError as exc:
+        raise ReferenceError(f"Reference FASTA {path} could not be read: {exc}") from exc
+    if kind == "gzip":
+        raise ReferenceError(
+            f"Reference FASTA {path} is compressed with ordinary gzip, which cannot be "
+            f"indexed: the alignment would run and no read could then be placed on a "
+            f"construct. Decompress it (gunzip), or compress it with bgzip (BGZF) "
+            f"instead, and give that file as the reference.")
 
     names: list[str] = []
     seen: set[str] = set()

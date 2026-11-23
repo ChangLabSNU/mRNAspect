@@ -30,14 +30,12 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any, Mapping, Optional, Sequence, Union
+from typing import Any, Iterable, Mapping, Optional, Sequence, Union
 
 from . import PRODUCT_NAME
 from .analysis.engine import (
-    DEFAULT_MAX_CONSTRUCTS,
-    DEFAULT_MAX_TRACKED_READS,
-    AnalysisEngine,
-)
+    AnalysisEngine, DEFAULT_MAX_CONSTRUCTS, DEFAULT_MAX_TRACKED_READS,
+    MaxConstructsExceeded)
 from .analysis.minknow import (PORE_ACTIVITY_GLOB, PORE_SCAN_GLOB,
                                read_final_summary,
                                SEQUENCING_SUMMARY_GLOB, find_run_root)
@@ -52,10 +50,14 @@ from .reporting.reporter import (
     CoAReporter,
     DEFAULT_MIN_READS,
 )
-from .runtime.checkpoint import Checkpoint, DEFAULT_STATE_NAME
+from .runtime.checkpoint import (Checkpoint, DEFAULT_STATE_NAME, ModelFingerprint,
+                                 StaleBasecallError, file_sha256, model_fingerprint)
 from .runtime.cli_result import (emit_error, emit_result, exit_code_for,
                                  stamp_run_outcome)
-from .runtime.ordering import natural_sorted
+from .runtime.input_folder import (BAM_FAIL_SUBDIR, BAM_SUBDIR, describe,
+                                   discover_inputs, no_inputs_message)
+from .runtime.run_dir_state import describe_run_dir
+from .runtime.run_input import check_run_input, run_input
 from .runtime.run_status import write_run_status
 from .runtime.reference_check import ReferenceError, reference_contigs
 from .runtime.lifecycle import (
@@ -80,6 +82,9 @@ progress_log = logging.getLogger(PROGRESS_LOGGER)
 # polya run for the whole run and per construct; the others per construct only.
 MODULES = ("run_summary", "polya", "consensus", "error_hotspot", "mapq", "terminal_reach")
 _MODE_GLOB = {"bam": "*.bam", "pod5": "*.pod5"}
+#: What `on_error` may be. `skip`: an unreadable input is left out and named in the
+#: report. `raise`: the run stops at the first one. The documents are checked against this.
+ON_ERROR_VALUES = ("skip", "raise")
 RUN_LOG_NAME = "run.log"
 
 # The shipped default config, loaded by every run: the only copy of the driver defaults.
@@ -269,7 +274,11 @@ class OfflinePipeline:
         basecaller: Optional[Basecaller] = None,
         aligner: Optional[Aligner] = None,
         state_file: Optional[Path | str] = None,
+        continues: bool = False,
     ) -> None:
+        """``continues``: the run folder was there before this run (a run name reused),
+        so this run continues an earlier one; run_status.json says so (``continued``).
+        The caller decides, since the folder exists by the time this is built."""
         # When Core started this run, for the elapsed time in interim JSON and reports
         # (2026-11-10). Set once, here, not in _reset_run_state: the live driver
         # starts dorado-server between building this and running it, and the GUI's own
@@ -281,7 +290,7 @@ class OfflinePipeline:
         if mode not in _MODE_GLOB:
             raise ValueError(f"mode must be one of {sorted(_MODE_GLOB)}, got {mode!r}")
         on_error = self.config.get("on_error", "skip")
-        if on_error not in ("skip", "raise"):
+        if on_error not in ON_ERROR_VALUES:
             raise ValueError(f"on_error must be 'skip' or 'raise', got {on_error!r}")
 
         self.input_dir = Path(input_dir)
@@ -395,6 +404,18 @@ class OfflinePipeline:
         self.checkpoint = Checkpoint(
             Path(state_file) if state_file else self.output_dir / DEFAULT_STATE_NAME
         )
+        # What a continued run carries over, for run_status.json: the basecalls on record
+        # (none in bam mode, which records none). Every input is aligned and counted again.
+        self._continued: Optional[dict[str, int]] = (
+            {"basecalls_cached": len(self.checkpoint)} if continues else None)
+        # What a cached basecall must have been made with to be reused: the model's name
+        # and a digest of its folder. Read once, here, so a folder that cannot be read
+        # stops the run before the first input.
+        self._model_fp: Optional[ModelFingerprint] = (
+            model_fingerprint(self.basecall_model) if self.mode == "pod5" else None)
+        # input name -> its cached basecall as checked at the start of run(), so each
+        # file is hashed once.
+        self._cache_checked: dict[str, Optional[Path]] = {}
         # The basecalled ubam dirs (pod5 mode) or links to the input BAMs (bam mode),
         # and the aligned BAMs. A restart reuses a cached ubam instead of basecalling
         # again.
@@ -445,12 +466,34 @@ class OfflinePipeline:
         """
         if not self.input_dir.is_dir():
             raise NotADirectoryError(f"input_dir is not a directory: {self.input_dir}")
-        inputs = natural_sorted(self.input_dir.glob(_MODE_GLOB[self.mode]))
+        # One rule for what a folder gives, shared with the summary shown before a run
+        # (runtime/input_folder.py): in bam mode a MinKNOW run folder is read as its
+        # bam_pass/ and bam_fail/ together.
+        inputs = discover_inputs(self.input_dir, self.mode)
         if not inputs:
-            raise FileNotFoundError(
-                f"No {_MODE_GLOB[self.mode]} files in {self.input_dir} (mode={self.mode})"
-            )
+            raise FileNotFoundError(no_inputs_message(self.input_dir, self.mode))
         return inputs
+
+    def _inputs_text(self, inputs: Sequence[Path]) -> str:
+        """The run's inputs in one line for the report: how many files, from where, and
+        in bam mode what became of MinKNOW's failed reads."""
+        said = f"{len(inputs)} file(s) from {self.input_dir}"
+        if self.mode != "bam":
+            return said
+        bam = describe(str(self.input_dir), "bam").get("bam")
+        if not bam:
+            return said
+        if not bam.get("pass_included", True):
+            # bam_fail/ given by itself: the failed reads only.
+            n = bam["pass"]["inputs"]
+            return f"{said} ({BAM_SUBDIR}/ not read: {n} file{'' if n == 1 else 's'})" \
+                if n else said
+        if bam["fail_included"]:
+            return (f"{said}: {bam['pass']['inputs']} in {BAM_SUBDIR}/, "
+                    f"{bam['fail']['inputs']} in {BAM_FAIL_SUBDIR}/")
+        n = bam["fail"]["inputs"]
+        return f"{said} ({BAM_FAIL_SUBDIR}/ not read: {n} file{'' if n == 1 else 's'})" \
+            if n else said
 
     def _write_status(self, current: Optional[str]) -> None:
         """run_status.json: how far the run has got, from before its first input (GUI
@@ -459,7 +502,7 @@ class OfflinePipeline:
         try:
             write_run_status(self.output_dir, found=self._inputs_total or 0,
                              processed=self._n_processed, total=self._inputs_total,
-                             current=current)
+                             current=current, continued=self._continued)
         except (OSError, ValueError) as exc:
             logger.warning("run_status.json not written: %s", exc)
 
@@ -571,6 +614,61 @@ class OfflinePipeline:
             link.unlink()
         link.symlink_to(path.resolve())
 
+    def _cached_basecall(self, path: Path) -> Optional[Path]:
+        """The cached basecall of ``path``, if made from this file with this model.
+
+        Raises:
+            StaleBasecallError: it was made from another file or with another model.
+        """
+        if path.name in self._cache_checked:
+            return self._cache_checked[path.name]
+        return self.checkpoint.verified(
+            path.name, input_path=path, model=self._model_fp)
+
+    def check_cached_models(self, names: Iterable[str]) -> None:
+        """Stop if a cached basecall among ``names`` was made with another model.
+
+        For the real-time driver, which restores finished inputs from their aligned
+        BAMs without coming through the cache.
+
+        Raises:
+            StaleBasecallError: an entry names another model.
+        """
+        if self._model_fp is None:
+            return
+        for name in sorted(names):
+            self.checkpoint.check_model(name, self._model_fp)
+
+    def _check_cached_basecalls(self, inputs: Sequence[Path]) -> None:
+        """Check every cached basecall of this run's inputs before any is used.
+
+        The model first, for all of them: that costs nothing. Then each file's
+        contents, which reads the file once; a resumed run finds out in minutes, not
+        after the inputs before the changed one have been processed again.
+
+        Raises:
+            StaleBasecallError: an input or the model is not what the cache was made
+                from.
+        """
+        self._cache_checked = {}
+        if self.mode != "pod5":
+            return
+        cached = [p for p in inputs if p.name in self.checkpoint]
+        if not cached:
+            return
+        self.check_cached_models(p.name for p in cached)
+        progress_log.info(
+            "Checking %d cached basecall(s) against their POD5 files…", len(cached))
+        for path in cached:
+            try:
+                self._cache_checked[path.name] = self.checkpoint.verified(
+                    path.name, input_path=path, model=self._model_fp)
+            except OSError as exc:
+                # A file that cannot be read is that input's failure, not the run's:
+                # left unchecked, it comes up again in the input loop, under `on_error`.
+                logger.warning("%s could not be read to check its cached basecall (%s)",
+                               path.name, exc)
+
     def _process_one_input(
         self, path: Path, *, label: str = ""
     ) -> Optional["InputResult"]:
@@ -595,6 +693,10 @@ class OfflinePipeline:
         Raises:
             ReferenceError: a reference that does not fit the data, under any
                 ``on_error``.
+            MaxConstructsExceeded: reads on more constructs than the configured limit,
+                under any ``on_error``.
+            StaleBasecallError: the cached basecall was made from another file or with
+                another model, under any ``on_error``.
             Exception: whatever a stage raised, under ``on_error: raise``.
         """
         primary_before = self.engine.primary_total
@@ -608,7 +710,7 @@ class OfflinePipeline:
                 self._stage_bam_input(path)
                 self.engine.capture_input_provenance(path)
             else:
-                cached_ubam = self.checkpoint.get(path.name)
+                cached_ubam = self._cached_basecall(path)
                 if cached_ubam is not None:
                     cached = True
                     self._n_basecall_cached += 1
@@ -617,12 +719,16 @@ class OfflinePipeline:
                     # Announced before the call: basecalling is the longest stage, and
                     # silence would look like a hang.
                     progress_log.info("%s%s: basecalling…", label, path.name)
+                    # What the basecall is made from, so a restart can tell whether
+                    # the file under this name is still that one.
+                    digest = file_sha256(path)
                     t_bc = time.perf_counter()
                     ubam = self.basecaller(path, self._basecall_cache_dir)
                     bc_s = time.perf_counter() - t_bc
                     # Recorded only once the ubam is complete, so an entry always means
                     # a usable ubam; a kill mid-basecall leaves none.
-                    self.checkpoint.record(path.name, ubam)
+                    self.checkpoint.record(path.name, ubam, input_sha256=digest,
+                                           model=self._model_fp)
             logger.info("%s%s: aligning…", label, path.name)
             t_al = time.perf_counter()
             bam = self.aligner(path.stem, self.reference, self._basecall_cache_dir)
@@ -631,9 +737,13 @@ class OfflinePipeline:
             n = self.engine.ingest_bam(bam)
             ing_s = time.perf_counter() - t_ing
             self._check_mapping_rate()
-        except (ReferenceError, MixedModelError):
-            # `on_error: skip` skips a bad input; a wrong reference, or a second
-            # basecaller model, is wrong for the whole run.
+        except (ReferenceError, MixedModelError, MaxConstructsExceeded,
+                StaleBasecallError):
+            # `on_error: skip` skips a bad input; a wrong reference, a second basecaller
+            # model, more constructs than `analysis.max_constructs` allows, or a cached
+            # basecall of another file or model is wrong for the whole run. Skipped,
+            # the third of these left the counts half updated, and the run ended on a
+            # read-accounting error that hid the cause.
             raise
         except Exception as exc:
             if self.on_error == "raise":
@@ -717,6 +827,10 @@ class OfflinePipeline:
         progress_log.info("Offline run: %d input(s), mode=%s, reference=%s",
                           len(inputs), self.mode, self.reference.name)
 
+        # Before anything is written or processed: a cached basecall of another file or
+        # model stops the run here.
+        self._check_cached_basecalls(inputs)
+
         abort = AbortFlag()
         prev_handlers = install_signal_handlers(abort)
         total_reads = 0
@@ -785,7 +899,7 @@ class OfflinePipeline:
         self.reporter.note_run_context(
             reference=self.reference,
             mode=self.mode,
-            inputs=f"{len(inputs)} file(s) from {self.input_dir}" if inputs else None,
+            inputs=self._inputs_text(inputs) if inputs else None,
             basecall_model=self.basecall_model,
             minimum_reads=f"{self.min_reads:,} mapped",
             minimum_reads_per_construct=f"{self.min_reads_per_construct:,} assigned",
@@ -1094,7 +1208,8 @@ def announce_run_dir(run_dir: Path, *, existed: bool) -> None:
                        if line.strip())
     logger.warning(
         "Run directory (CONTINUING an existing one): %s — %d cached basecall(s) will be "
-        "reused, and any report already in it will be replaced.", run_dir, n_cached)
+        "reused where the POD5 file and the model are unchanged, and any report already "
+        "in it will be replaced.", run_dir, n_cached)
 
 
 # The progress channel is INFO from import on, also for callers that bypass the CLI's
@@ -1170,7 +1285,9 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
                         "folder listings only and creates nothing.")
     p.add_argument("--live", action="store_true",
                    help="With --describe-input: for a live run, which reads the RUN "
-                        "folder (the live driver watches its realtime.pod5_subdir).")
+                        "folder (the live driver watches its realtime.pod5_subdir). With "
+                        "--print-config: the input is a live run's, for run_dir_state's "
+                        "check of a run name that continues an earlier run.")
     # Override flags default to None, so "not passed" leaves the config's value.
     p.add_argument("--reference", type=str, default=None)
     p.add_argument("--mode", choices=sorted(_MODE_GLOB), default=None)
@@ -1244,9 +1361,10 @@ def main(argv: Optional[list[str]] = None) -> int:
             # Which folder a run of this kind reads, from any level the operator picked
             # (GUI round 2, 2026-11-12). Read-only; its own JSON shape. The live driver's
             # pod5_subdir is the resolved config's, as the run would use it.
-            from .runtime.input_folder import describe
             pod5_subdir = (cfg.get("realtime") or {}).get("pod5_subdir", "pod5")
-            print(json.dumps(describe(args.input_dir, "pod5" if args.live else cfg["mode"],
+            # A live run follows POD5 files unless --mode bam says MinKNOW's BAM files.
+            mode = (args.mode or "pod5") if args.live else cfg["mode"]
+            print(json.dumps(describe(args.input_dir, mode,
                                       live=args.live, pod5_subdir=pod5_subdir), indent=2))
             return 0
         if args.print_config:
@@ -1254,10 +1372,27 @@ def main(argv: Optional[list[str]] = None) -> int:
             # run-result contract. run_dir is where a run would write, from the same two
             # functions a run uses; a failure there is reported, not raised.
             run_dir, run_dir_error = None, None
+            current, not_compared = None, []
             try:
-                _, out_dir, name = resolve_io(cfg, need_input=False)
+                in_dir, out_dir, name = resolve_io(cfg, need_input=False)
                 run_dir = str(resolve_run_dir(out_dir, output_name=name,
                                               continue_latest=args.continue_latest))
+                # The input a Start would give, so run_dir_state can say whether the run
+                # there would refuse it (run_input.py). --live says which driver.
+                if in_dir:
+                    ref = cfg.get("reference") or None
+                    driver = "live" if args.live else "offline"
+                    try:
+                        current = run_input(driver=driver, mode=cfg["mode"],
+                                            input_dir=in_dir, reference=ref)
+                    except OSError:
+                        not_compared.append("reference (it cannot be read)")
+                        current = run_input(driver=driver, mode=cfg["mode"],
+                                            input_dir=in_dir, reference=None)
+                    if not ref:
+                        not_compared.append("reference")
+                else:
+                    not_compared.append("input folder")
             except ValueError as exc:
                 run_dir_error = str(exc)
             print(json.dumps({
@@ -1266,6 +1401,9 @@ def main(argv: Optional[list[str]] = None) -> int:
                 "shipped_config": str(_SHIPPED_CONFIG),
                 "run_dir": run_dir,
                 "run_dir_error": run_dir_error,
+                # Whether a Start would continue an earlier run there, and what it left.
+                "run_dir_state": (describe_run_dir(run_dir, current, not_compared)
+                                  if run_dir else None),
                 "config_changes": config_changes(args.config),
             }, indent=2, default=str))
             return 0
@@ -1310,7 +1448,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     # A reference error (at construction or during the run) or a dorado-server error
     # ends the run with its message and exit 1.
     try:
-        pipe = OfflinePipeline(input_dir, run_dir, cfg)
+        pipe = OfflinePipeline(input_dir, run_dir, cfg, continues=existed)
+        # A run name continues the earlier run of its folder only with the same input
+        # and reference; else exit 2 here, before anything is processed (run_input.py).
+        check_run_input(run_dir, run_input(driver="offline", mode=cfg["mode"],
+                                           input_dir=input_dir,
+                                           reference=cfg["reference"]))
         if cfg["mode"] == "pod5":
             # One server for the whole run, so the model loads once; none in bam mode.
             with dorado_server(cfg["basecall"].get("server"),

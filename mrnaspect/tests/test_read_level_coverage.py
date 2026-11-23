@@ -89,6 +89,24 @@ def test_pod5_absent_from_summary_is_named_not_averaged():
     assert rep["n_shortfall_pod5s"] == 0
 
 
+def test_a_summary_that_names_none_of_the_inputs_is_not_measured():
+    """BAMs basecalled outside MinKNOW and put in a run folder: the summary has "-" for
+    every read's BAM, so no input has an instrument count. It read `measured` with an
+    expected total of 0 and no ratio."""
+    cov = _coverage(**{"other_0.bam": 100})
+    rep = check_read_coverage(cov, {"mine_0.bam": 60, "mine_1.bam": 40})
+    assert rep["status"] == "not_measured"
+    assert "none of this run's 2 input file(s)" in rep["reason"]
+    assert "sequencing_summary.txt" in rep["reason"]
+    assert "overall_ratio" not in rep      # never a fabricated 0.0
+    assert rep["per_pod5"]["mine_0.bam"] == {
+        "ours": 60, "instrument": None, "ratio": None, "note": "not in sequencing_summary"}
+    # An empty summary (every row "-") is the same case.
+    assert check_read_coverage(_coverage(), {"mine_0.bam": 60})["status"] == "not_measured"
+    # No input yet is not this case: nothing is missing from the summary.
+    assert check_read_coverage(cov, {})["status"] == "measured"
+
+
 def test_zero_read_pod5_does_not_divide_by_zero():
     cov = _coverage(**{"empty.pod5": 0})
     rep = check_read_coverage(cov, {"empty.pod5": 0})

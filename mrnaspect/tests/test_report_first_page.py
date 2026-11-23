@@ -63,7 +63,7 @@ def _glance(html_str: str) -> list[list[str]]:
 
 
 def _pages(pdf: Path) -> list[str]:
-    pypdf = pytest.importorskip("pypdf")
+    import pypdf  # not importorskip: without the reader this must fail, not skip
     return [re.sub(r"\s+", " ", p.extract_text() or "")
             for p in pypdf.PdfReader(str(pdf)).pages]
 

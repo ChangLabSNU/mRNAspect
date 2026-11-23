@@ -32,6 +32,9 @@ changing after it appears; the live watcher's longer window is not needed here."
 
 _SUMMARY_GLOB = "sequencing_summary*.txt"
 _POD5_COLUMN = "filename_pod5"
+#: MinKNOW's verdict on each read: TRUE for a read it passed (``bam_pass/``), FALSE for
+#: one it failed on its qscore.
+_PASSES_COLUMN = "passes_filtering"
 
 
 # ---------------------------------------------------------------------------
@@ -69,11 +72,24 @@ class RunCoverage:
         return seen / self.total_reads
 
 
-def read_sequencing_summary(run_dir: Path | str) -> Optional[RunCoverage]:
-    """Count rows per POD5 in the run's ``sequencing_summary*.txt``, streamed by line.
+def read_sequencing_summary(run_dir: Path | str,
+                            column: str = _POD5_COLUMN,
+                            passes_filtering: Optional[bool] = None
+                            ) -> Optional[RunCoverage]:
+    """Count rows per input file in the run's ``sequencing_summary*.txt``, by line.
+
+    ``column`` names the file each read went into: ``filename_pod5`` for a run followed
+    by its POD5 files, ``filename_bam`` for one followed by MinKNOW's BAM files. A read
+    MinKNOW wrote to no such file has ``-`` there (seen on a real run for the reads it
+    failed, with no ``bam_fail/`` written) and is not counted.
+
+    ``passes_filtering`` True or False counts only the reads MinKNOW passed or failed
+    (its ``passes_filtering`` column): a run that follows ``bam_pass/`` or ``bam_fail/``
+    alone is compared with that half of the run, not with the whole. On one real run every
+    TRUE row named a ``bam_pass/`` file (2,397,909 of them).
 
     Uses the first match in sorted order. Returns None (coverage not measured) when
-    there is none, it cannot be read, or it has no ``filename_pod5`` column.
+    there is none, it cannot be read, or it lacks a column it needs.
     """
     run_dir = Path(run_dir)
     candidates = sorted(run_dir.glob(_SUMMARY_GLOB))
@@ -87,18 +103,31 @@ def read_sequencing_summary(run_dir: Path | str) -> Optional[RunCoverage]:
     try:
         with open(path, "r", encoding="utf-8", errors="replace") as fh:
             header = fh.readline().rstrip("\n").split("\t")
-            if _POD5_COLUMN not in header:
+            if column not in header:
                 logger.warning(
                     "%s has no %r column (columns: %s); run coverage not measured",
-                    path.name, _POD5_COLUMN, ", ".join(header[:6]))
+                    path.name, column, ", ".join(header[:6]))
                 return None
-            idx = header.index(_POD5_COLUMN)
+            idx = header.index(column)
+            keep = None
+            if passes_filtering is not None:
+                if _PASSES_COLUMN not in header:
+                    logger.warning(
+                        "%s has no %r column, so the %s reads cannot be told apart; run "
+                        "coverage not measured", path.name, _PASSES_COLUMN,
+                        "passed" if passes_filtering else "failed")
+                    return None
+                keep = (header.index(_PASSES_COLUMN),
+                        "TRUE" if passes_filtering else "FALSE")
             for line in fh:
                 parts = line.rstrip("\n").split("\t")
                 if len(parts) <= idx:
                     continue  # ragged line (e.g. a truncated last one): skipped
+                if keep is not None and (len(parts) <= keep[0]
+                                         or parts[keep[0]].strip().upper() != keep[1]):
+                    continue
                 name = Path(parts[idx]).name
-                if name:
+                if name and name != "-":
                     counts[name] = counts.get(name, 0) + 1
     except OSError as exc:
         logger.warning("Could not read %s (%s); run coverage not measured", path, exc)
@@ -144,9 +173,12 @@ class RunSealer:
         exclude_suffixes: tuple[str, ...] = DEFAULT_EXCLUDE_SUFFIXES,
         clock: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
+        is_complete: Optional[Callable[[Path], bool]] = None,
     ) -> None:
         if stable_polls < 2:
             raise ValueError("stable_polls must be >= 2 (see DirectoryWatcher)")
+        # As the watcher's: asked of a file whose size is stable, before it is handed over.
+        self.is_complete = is_complete
         self.pod5_dir = Path(pod5_dir)
         self.poll_interval_s = float(poll_interval_s)
         self.stable_polls = int(stable_polls)
@@ -261,7 +293,8 @@ class RunSealer:
                 last, count = sizes.get(name, (None, 0))
                 count = count + 1 if size == last else 1
                 sizes[name] = (size, count)
-                if count >= self.stable_polls and size > 0:
+                if count >= self.stable_polls and size > 0 and (
+                        self.is_complete is None or self.is_complete(path)):
                     done.add(name)
                     report.handed_over.append(path)
                     logger.info("Sealing: %s ready (%d bytes)", name, size)
@@ -316,6 +349,16 @@ def check_read_coverage(
 
     A POD5 below ``min_ratio`` is reported as a shortfall, not raised; only an invalid
     ``min_ratio`` raises ``ValueError``.
+
+    For a run followed by MinKNOW's BAM files the inputs are BAM files, compared with
+    the summary's ``filename_bam``. The keys keep their names (``per_pod5``,
+    ``n_shortfall_pod5s``, a shortfall's ``pod5``): they are what readers of
+    ``qc_result.json`` look up, and each holds an input file's name of either kind.
+
+    When there are inputs and the summary names none of them, nothing was compared and
+    the status is ``not_measured`` with the reason. It read ``measured`` with an expected
+    total of 0 (seen on BAMs basecalled outside MinKNOW and put in a run folder, whose
+    summary has ``-`` for every read's BAM).
     """
     if coverage is None:
         return {"status": "not_measured",
@@ -342,9 +385,19 @@ def check_read_coverage(
                                "ratio": round(ratio, 6)})
 
     overall = (ours_total / expected_total) if expected_total else None
+    compared = sum(1 for entry in per_pod5.values() if entry["instrument"] is not None)
+    if per_pod5 and not compared:
+        return {
+            "status": "not_measured",
+            "reason": (f"none of this run's {len(per_pod5)} input file(s) is named in "
+                       f"{coverage.source.name}, so there is no instrument count to "
+                       f"compare with"),
+            # No totals and no ratio, as with no summary at all: there is none to give.
+            "per_pod5": per_pod5,
+        }
     if shortfalls:
         logger.error(
-            "READ-LEVEL SHORTFALL on %d POD5(s): fewer primary reads reached QC than the "
+            "READ-LEVEL SHORTFALL on %d input(s): fewer primary reads reached QC than the "
             "instrument recorded (worst %.1f%%). The file-level coverage figure cannot see "
             "this. Check the basecall/align path before trusting any rate in this report: %s",
             len(shortfalls), 100 * min(s["ratio"] for s in shortfalls),
@@ -418,7 +471,7 @@ def build_run_accounting(
     unexplained = observed - accounted
     if unexplained:
         raise RuntimeError(
-            f"run accounting does not partition: {len(unexplained)} POD5(s) fell into no "
+            f"run accounting does not partition: {len(unexplained)} input(s) fell into no "
             f"bucket: {sorted(unexplained)[:8]}. A partial report is allowed; an "
             f"unexplained one is not.")
 
@@ -446,6 +499,7 @@ def build_run_accounting(
     accounting["read_coverage"] = check_read_coverage(coverage, primary_by_pod5 or {})
     if fraction is not None and fraction < 1.0:
         logger.warning(
-            "Report covers %.2f%% of the reads the instrument recorded (%d POD5 "
-            "unaccounted for). See run_accounting.", fraction * 100, len(lost))
+            "Report covers %.2f%% of the reads the instrument recorded (%d input "
+            "file(s) in its summary were never seen here). See run_accounting.",
+            fraction * 100, len(lost))
     return accounting

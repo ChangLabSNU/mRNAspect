@@ -1,4 +1,5 @@
-"""mRNAspect real-time driver: QC on a live MinKNOW run, as its POD5 files appear.
+"""mRNAspect real-time driver: QC on a live MinKNOW run, as its POD5 files appear, or as
+the BAM files MinKNOW basecalls itself are finished (``--mode bam``).
 
     BOOT -> REPLAY -> LIVE -> SEALING -> FINALIZE
 
@@ -24,6 +25,7 @@ import enum
 import logging
 import os
 import queue
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -46,6 +48,7 @@ from ..main import (
     sample_overrides,
 )
 from ..reporting import summary_writer as SW
+from ..wrappers._shell import unfinished_outputs
 from ..wrappers.dorado_server import DoradoServerError, dorado_server
 from ..runtime.cli_result import (emit_error, emit_result, exit_code_for,
                                   stamp_run_outcome)
@@ -55,7 +58,10 @@ from ..runtime.lifecycle import (
     install_signal_handlers,
     restore_signal_handlers,
 )
+from ..runtime.input_folder import (BAM_FAIL_SUBDIR, BAM_SUBDIR, MODE_GLOB,
+                                    barcode_folders)
 from ..runtime.reference_check import ReferenceError
+from ..runtime.run_input import check_run_input, run_input
 from ..runtime.run_status import write_run_status
 from ..analysis.minknow import read_final_summary
 from .backpressure import (
@@ -70,15 +76,18 @@ from .sealing import (
     DEFAULT_SEAL_POLL_INTERVAL_S,
     DEFAULT_SEAL_STABLE_POLLS,
     RunSealer,
+    SweepReport,
     build_run_accounting,
     read_sequencing_summary,
 )
 from .watcher import (
+    DEFAULT_POD5_PATTERN,
     DEFAULT_POLL_INTERVAL_S,
     DEFAULT_RUN_END_GLOB,
     DEFAULT_STABLE_POLLS,
     DirectoryWatcher,
     FileReadyEvent,
+    bam_is_complete,
 )
 
 logger = logging.getLogger(__name__)
@@ -88,7 +97,6 @@ progress_log = logging.getLogger(PROGRESS_LOGGER)
 #: Seconds between heartbeat lines.
 DEFAULT_PROGRESS_INTERVAL_S = 30.0
 
-PARTIAL_SUFFIX = ".partial"
 DEFAULT_QUIESCENCE_WARN_S = 900.0
 """Warn after this long with no arrival. Sized above the longest realistic batch duration
 (3600 s default is longer still, so this is configurable) — a warning, never an action."""
@@ -123,9 +131,24 @@ class RealtimePipeline:
         run_dir: Path | str,
         output_dir: Path | str,
         config: Mapping[str, Any],
+        *,
+        continues: bool = False,
         **offline_kwargs: Any,
     ) -> None:
-        self.run_dir = Path(run_dir)
+        # `continues`: the output folder was there before this run (a run name reused).
+        # run_status.json then says how many inputs the replay restored (`continued`).
+        self.continues = continues
+        self._continued: Optional[dict[str, int]] = None
+        # A BAM run given its run folder follows bam_pass/ and bam_fail/ together. Given
+        # one of the two, it follows that one only, as an offline BAM run does: bam_pass/
+        # is the passed reads, bam_fail/ the reads MinKNOW failed on their qscore. The run
+        # folder is still the one above it, where MinKNOW writes the run-end marker and
+        # the sequencing summary.
+        picked = Path(run_dir)
+        self.bam_only: Optional[str] = (
+            picked.name if config.get("mode") == "bam"
+            and picked.name in (BAM_SUBDIR, BAM_FAIL_SUBDIR) else None)
+        self.run_dir = picked.parent if self.bam_only else picked
         self.output_dir = Path(output_dir)
         # The offline pipeline holds Core, the stages, the checkpoint and the config;
         # this class adds the feed and the lifecycle.
@@ -136,6 +159,33 @@ class RealtimePipeline:
         self.poll_interval_s = float(rt.get("poll_interval_s", DEFAULT_POLL_INTERVAL_S))
         self.stable_polls = int(rt.get("stable_polls", DEFAULT_STABLE_POLLS))
         self.pod5_subdir = rt.get("pod5_subdir", "pod5")
+        # What is followed. A POD5 run: MinKNOW's POD5 files, basecalled here. A BAM run:
+        # the BAM files MinKNOW basecalls itself, in bam_pass/ and bam_fail/ together
+        # (leaving the failed reads out is a qscore filter), or in the one of them given
+        # (`bam_only`), each processed once its writer has closed it. A barcoded run has
+        # a folder per barcode under each; one run follows one barcode, named in
+        # `realtime.barcode`, and never several.
+        self.mode = self.core.mode
+        self.barcode = str(rt.get("barcode") or "").strip()
+        if self.barcode and (self.mode != "bam" or Path(self.barcode).name != self.barcode
+                             or self.barcode in (".", "..")):
+            raise ValueError(
+                f"realtime.barcode is one folder name under {BAM_SUBDIR}/ of a BAM run "
+                f"(such as barcode01), got {self.barcode!r} in mode {self.mode!r}")
+        if self.mode == "bam":
+            sub = (self.barcode,) if self.barcode else ()
+            self.watch_dirs = [self.run_dir.joinpath(folder, *sub)
+                               for folder in ((self.bam_only,) if self.bam_only
+                                              else (BAM_SUBDIR, BAM_FAIL_SUBDIR))]
+            self.pattern = MODE_GLOB["bam"]
+            self._is_complete: Optional[Any] = bam_is_complete
+        else:
+            self.watch_dirs = [self.pod5_dir]
+            self.pattern = DEFAULT_POD5_PATTERN
+            self._is_complete = None
+        # input name -> where it was first seen: two files of one name would share
+        # everything the run keeps for an input.
+        self._paths: dict[str, Path] = {}
         self.run_end_glob = rt.get("run_end_glob", DEFAULT_RUN_END_GLOB)
         self.seal_budget_s = float(rt.get("seal_budget_s", DEFAULT_SEAL_BUDGET_S))
         # Sealing has its own, shorter stability window: once the marker is written no
@@ -186,30 +236,46 @@ class RealtimePipeline:
     # -- BOOT -------------------------------------------------------------
 
     def boot(self) -> None:
-        """Remove the half-written ``*.partial`` artifacts of a killed stage."""
+        """Remove what a killed basecall or alignment left unfinished.
+
+        Only the wrappers' own unfinished outputs, in the folder they write to
+        (``unfinished_outputs``). The whole output folder used to be searched for any
+        name containing ``.partial``, which also matched a finished BAM named after an
+        input such as ``batch.partial-01.pod5``, and the operator's own files.
+        """
         self.state = State.BOOT
         self.output_dir.mkdir(parents=True, exist_ok=True)
-        stale = sorted(self.output_dir.rglob(f"*{PARTIAL_SUFFIX}*"))
+        stale = unfinished_outputs(self.core._basecall_cache_dir)
         for path in stale:
-            # Outputs are published by rename, so a *.partial is always debris.
-            logger.warning("BOOT: removing stale partial artifact %s", path.name)
-            if path.is_dir():
-                import shutil
+            # An output is renamed into place when complete, so these never were.
+            logger.warning("BOOT: removing the unfinished output %s", path.name)
+            if path.is_dir() and not path.is_symlink():
                 shutil.rmtree(path, ignore_errors=True)
             else:
                 path.unlink(missing_ok=True)
         if stale:
-            logger.info("BOOT: cleared %d stale partial artifact(s)", len(stale))
+            logger.info("BOOT: removed %d unfinished output(s)", len(stale))
 
     # -- REPLAY -----------------------------------------------------------
 
     def replay(self) -> None:
-        """On a restart, re-ingest the manifest's aligned BAMs into the fresh engine."""
+        """On a restart, re-ingest the manifest's aligned BAMs into the fresh engine.
+
+        Raises:
+            StaleBasecallError: the inputs to restore were basecalled with a model other
+                than the one this run asks for. They are restored from their aligned
+                BAMs, so nothing else would notice until the report named a model that
+                did not make its reads.
+        """
         self.state = State.REPLAY
+        self.core.check_cached_models(self.manifest.recorded_pod5s())
         report = self.manifest.replay(self.core.engine)
         for entry in report.replayed:
             self.progress.ingested.add(entry.pod5_name)
             self.progress.observed.add(entry.pod5_name)
+        if self.continues:
+            # Before LIVE's first status write, so a surface sees it from the start.
+            self._continued = {"inputs_restored": report.n_replayed}
         if report.n_replayed:
             logger.info(
                 "REPLAY: %d input(s) restored from the manifest (%d primary reads). "
@@ -232,7 +298,7 @@ class RealtimePipeline:
                 return
             self._status_key = key
             write_run_status(self.output_dir, found=found, processed=done, total=None,
-                             current=self._current_input)
+                             current=self._current_input, continued=self._continued)
         except (OSError, ValueError) as exc:
             logger.warning("run_status.json not written: %s", exc)
 
@@ -257,20 +323,28 @@ class RealtimePipeline:
     def live(self) -> None:
         """Consume watcher events until run-end or abort."""
         self.state = State.LIVE
-        watcher = DirectoryWatcher(
+        self._refuse_pooled_barcodes()
+        # One watcher per folder followed (a BAM run has two). The run-end marker is in
+        # the run folder, so the first one alone reports it.
+        watchers = [DirectoryWatcher(
             self.run_dir,
-            pod5_subdir=self.pod5_subdir,
+            pod5_subdir=(self.pod5_subdir if self.mode == "pod5"
+                         else str(folder.relative_to(self.run_dir))),
             on_ready=self._on_ready,
-            on_run_end=self._on_run_end,
+            on_run_end=self._on_run_end if i == 0 else None,
             poll_interval_s=self.poll_interval_s,
             stable_polls=self.stable_polls,
+            pattern=self.pattern,
             run_end_glob=self.run_end_glob,
             # Files already there when QC starts (QC started mid-run) are processed too.
             emit_preexisting=True,
-        )
-        thread = threading.Thread(target=watcher.run, name="DirectoryWatcher", daemon=True)
-        thread.start()
-        logger.info("LIVE: watching %s", self.pod5_dir)
+            is_complete=self._is_complete,
+        ) for i, folder in enumerate(self.watch_dirs)]
+        threads = [threading.Thread(target=w.run, name=f"DirectoryWatcher-{i}", daemon=True)
+                   for i, w in enumerate(watchers)]
+        for thread in threads:
+            thread.start()
+        logger.info("LIVE: watching %s", ", ".join(str(d) for d in self.watch_dirs))
         # Up and watching, before MinKNOW's first POD5, which can be minutes away.
         self._write_status()
         try:
@@ -280,6 +354,7 @@ class RealtimePipeline:
                     event = self._queue.get(timeout=self.poll_interval_s)
                 except queue.Empty:
                     self._warn_if_quiet()
+                    self._refuse_pooled_barcodes()
                     continue
                 if event is not None:
                     self._handle(event.path)
@@ -309,9 +384,32 @@ class RealtimePipeline:
                     "every number in the report (see run_accounting.aborted_unprocessed).",
                     len(aborted_now))
         finally:
-            watcher.stop()
-            thread.join(timeout=self.poll_interval_s * 3)
-            self._watcher_emitted = watcher.emitted_names
+            for watcher in watchers:
+                watcher.stop()
+            for thread in threads:
+                thread.join(timeout=self.poll_interval_s * 3)
+            self._watcher_emitted = set().union(*(w.emitted_names for w in watchers))
+
+    def _refuse_pooled_barcodes(self) -> None:
+        """Stop a BAM run of a barcoded run folder that names no barcode.
+
+        MinKNOW then writes each barcode's BAMs into a folder of its own, none directly
+        in ``bam_pass/``: this run would find nothing and wait, and reading the folders
+        together would pool the samples. Asked again while the run is quiet, since the
+        folders appear with the first reads.
+
+        Raises:
+            ValueError: barcode folders with BAM files, and no ``realtime.barcode``.
+        """
+        if self.mode != "bam" or self.barcode:
+            return
+        found = barcode_folders(self.run_dir)
+        if found:
+            names = ", ".join(f.name for f in found[:6]) + (", ..." if len(found) > 6 else "")
+            raise ValueError(
+                f"{self.run_dir} is a barcoded run: {BAM_SUBDIR}/ holds one folder per "
+                f"barcode ({names}). A live run follows one of them and they are not "
+                f"read together: name it with --barcode (realtime.barcode).")
 
     def _warn_if_quiet(self) -> None:
         quiet = time.monotonic() - self._last_arrival
@@ -362,8 +460,19 @@ class RealtimePipeline:
         return f"[queue {depth}, ~{lag / 60:.0f} min behind] "
 
     def _handle(self, pod5: Path) -> Optional[InputResult]:
-        """Process one POD5 through the offline driver's per-input step."""
+        """Process one input (a POD5, or a BAM of a BAM run) through the offline
+        driver's per-input step.
+
+        Raises:
+            ValueError: a second file of a name already seen, in another folder.
+        """
         name = pod5.name
+        seen = self._paths.setdefault(name, pod5)
+        if seen != pod5:
+            raise ValueError(
+                f"{name} is in both {seen.parent} and {pod5.parent}. Everything a run "
+                f"keeps for an input is named after the file, so two files of one name "
+                f"cannot be read in one run.")
         self.progress.observed.add(name)
         if name in self.progress.ingested:
             # Once per run, by this in-process set (not by the manifest).
@@ -430,16 +539,28 @@ class RealtimePipeline:
         elif self.progress.deferred:
             logger.info("SEALING: catching up on %d input(s) deferred under backpressure",
                         len(self.progress.deferred))
-        sealer = RunSealer(
-            self.pod5_dir,
-            poll_interval_s=self.seal_poll_interval_s,
-            stable_polls=self.seal_stable_polls,
-            budget_s=self.seal_budget_s,
-        )
-        # The sweep honours an abort: it can be long, since if QC starts after the run
-        # has ended, every input is processed here.
-        report = sealer.sweep(already_handled=handled, on_ready=self._handle,
-                              stop=self._abort.event)
+        # Each folder followed is swept, within the one budget. The sweep honours an
+        # abort: it can be long, since if QC starts after the run has ended, every input
+        # is processed here.
+        report = SweepReport()
+        t_seal = time.monotonic()
+        for folder in self.watch_dirs:
+            sealer = RunSealer(
+                folder,
+                poll_interval_s=self.seal_poll_interval_s,
+                stable_polls=self.seal_stable_polls,
+                budget_s=max(self.seal_budget_s - (time.monotonic() - t_seal), 0.0),
+                pattern=self.pattern,
+                is_complete=self._is_complete,
+            )
+            part = sealer.sweep(already_handled=handled, on_ready=self._handle,
+                                stop=self._abort.event)
+            report.handed_over += part.handed_over
+            report.unstable_at_seal += part.unstable_at_seal
+            report.appeared_after_marker += part.appeared_after_marker
+            report.aborted += part.aborted
+            report.budget_exceeded = report.budget_exceeded or part.budget_exceeded
+            report.elapsed_s += part.elapsed_s
         if report.aborted:
             self.progress.aborted.update(report.aborted)
             self.progress.observed.update(report.aborted)
@@ -468,8 +589,18 @@ class RealtimePipeline:
         # OfflinePipeline.run(), so it reads them here.
         with self.core._stage("instrument_s"):
             self.core._refresh_instrument()
-        # Before the render: the banner uses the share of reads analysed.
-        coverage = read_sequencing_summary(self.run_dir)
+        # Before the render: the banner uses the share of reads analysed. MinKNOW's
+        # summary counts every barcode's reads, so for one barcode it is not the measure.
+        # One of the two BAM folders is compared with the reads MinKNOW passed, or failed,
+        # alone: the other half of the run was left out on purpose, not lost.
+        if self.mode == "bam":
+            coverage = (None if self.barcode
+                        else read_sequencing_summary(
+                            self.run_dir, column="filename_bam",
+                            passes_filtering=(None if not self.bam_only
+                                              else self.bam_only == BAM_SUBDIR)))
+        else:
+            coverage = read_sequencing_summary(self.run_dir)
 
         # The inputs missing from the numbers, by cause. Under sampling, deferred inputs
         # are the unsampled part, not failures.
@@ -484,12 +615,13 @@ class RealtimePipeline:
             total_inputs=len(self.progress.observed) or None)
         self.core.reporter.note_sample(
             declared=_declared_identity(self.core.config.get("sample")),
-            recorded=read_final_summary(self.pod5_dir))
+            recorded=read_final_summary(self.run_dir if self.mode == "bam"
+                                        else self.pod5_dir))
         # Before the render.
         self.core.reporter.note_run_context(
             reference=self.core.reference,
-            mode="pod5 (real time)",
-            inputs=f"{len(self.progress.ingested)} POD5 from {self.pod5_dir}",
+            mode=f"{self.mode} (real time)",
+            inputs=self._inputs_text(),
             basecall_model=self.core.basecall_model,
             minimum_reads=f"{self.core.min_reads:,} mapped",
             minimum_reads_per_construct=f"{self.core.min_reads_per_construct:,} assigned",
@@ -548,7 +680,8 @@ class RealtimePipeline:
 
         SW.write_result_json(
             self.output_dir, self.core._bundle(), self.core.integrator, result=result,
-            inputs=sorted(self.pod5_dir.glob("*.pod5")),
+            inputs=sorted(p for folder in self.watch_dirs
+                          for p in folder.glob(self.pattern)),
             run_accounting=accounting, timing=self.core._timing,
             params={"config": self.core.config,
                     "driver": "realtime" if self.mimic_params is None else "realtime+mimic",
@@ -563,6 +696,25 @@ class RealtimePipeline:
                     result.get("status"), reason.value,
                     len(self.progress.ingested), len(self.progress.observed))
         return result
+
+    def _inputs_text(self) -> str:
+        """The run's inputs in one line for the report."""
+        done = self.progress.ingested
+        if self.mode != "bam":
+            return f"{len(done)} POD5 from {self.pod5_dir}"
+        # One barcode's files are in bam_pass/<barcode>/ and bam_fail/<barcode>/. The line
+        # named <run>/<barcode>, a folder that does not exist.
+        of = f", barcode {self.barcode}" if self.barcode else ""
+        sub = f"{self.barcode}/" if self.barcode else ""
+        if self.bam_only:
+            which = ("the passed reads only" if self.bam_only == BAM_SUBDIR
+                     else "the failed reads only")
+            return (f"{len(done)} BAM from {self.run_dir}{of}: {self.bam_only}/{sub}, "
+                    f"{which}")
+        passed, failed = (sum(1 for name in done if (folder / name).is_file())
+                          for folder in self.watch_dirs)
+        return (f"{len(done)} BAM from {self.run_dir}{of}: {passed} in {BAM_SUBDIR}/{sub}, "
+                f"{failed} in {BAM_FAIL_SUBDIR}/{sub}")
 
     # -- the whole run ----------------------------------------------------
 
@@ -643,7 +795,9 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
              "final_summary_*.txt. NOT the pod5/ directory itself: the run-end marker "
              "lives one level above it, and a watcher that never sees the marker never "
              "finishes the run. (The offline driver's --input-dir holds the input FILES; "
-             "here it is one level up, because the marker does not live with them.)")
+             "here it is one level up, because the marker does not live with them.) "
+             "With --mode bam, the run folder follows bam_pass/ and bam_fail/ together; "
+             "its bam_pass/ or bam_fail/ given instead follows that folder only.")
     p.add_argument("--output-dir", type=str, default=None,
                    help="PARENT dir for OUTPUT. This run's report + qc_result.json + "
                         "manifest + run.log go in a subdirectory of it (see "
@@ -672,7 +826,16 @@ def _parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     # The offline driver's sample flags, from its own table: the GUI sends them to both.
     add_sample_arguments(p)
     p.add_argument("--on-error", choices=["skip", "raise"], default=None)
+    p.add_argument("--mode", choices=["pod5", "bam"], default=None,
+                   help="What to follow: pod5, MinKNOW's POD5 files, basecalled here (needs "
+                        "dorado-server and --basecall-model); bam, the BAM files MinKNOW "
+                        "basecalls itself, in bam_pass/ and bam_fail/ (or the one of them "
+                        "given as --input-dir). Must be said, here "
+                        "or as `mode:` in a --config: the shipped default is not used.")
     # --- the `realtime:` config section -----------------------------------
+    p.add_argument("--barcode", default=None,
+                   help="With --mode bam on a barcoded run: the one barcode to follow, by "
+                        "its folder name (barcode01). Barcodes are never read together.")
     p.add_argument("--pod5-subdir", default=None,
                    help="Subdir of --input-dir that MinKNOW writes POD5s into "
                         "(default 'pod5'; empty string = the run dir itself).")
@@ -823,7 +986,8 @@ def _log_startup(pipe: "RealtimePipeline", cfg: Mapping[str, Any]) -> None:
     stability = pipe.poll_interval_s * pipe.stable_polls
     logger.info("REAL-TIME QC — resolved configuration")
     logger.info("  run dir         : %s", pipe.run_dir)
-    logger.info("  watching        : %s  (*.pod5)", pipe.pod5_dir)
+    logger.info("  watching        : %s  (%s)",
+                ", ".join(str(d) for d in pipe.watch_dirs), pipe.pattern)
     logger.info("  run-end marker  : %s", pipe.run_end_glob)
     logger.info("  output dir      : %s", pipe.output_dir)
     logger.info("  reference       : %s", cfg.get("reference"))
@@ -847,12 +1011,32 @@ def _log_startup(pipe: "RealtimePipeline", cfg: Mapping[str, Any]) -> None:
         logger.warning("    The reads are real; the ARRIVAL TIMING is manufactured. Any "
                        "number that depends on wall clock (duty cycle, latency, span) "
                        "describes the drill, not a run.")
-    if not pipe.pod5_dir.exists():
+    if not any(d.exists() for d in pipe.watch_dirs):
         # Normal before MinKNOW writes its first batch, and also what a typo looks like.
         logger.warning(
             "%s does not exist yet. That is NORMAL if the run has not started writing, "
             "and is what a mistyped --input-dir/--pod5-subdir also looks like. Nothing will "
-            "be ingested until POD5s appear there.", pipe.pod5_dir)
+            "be ingested until files appear there.",
+            " and ".join(str(d) for d in pipe.watch_dirs))
+
+
+def _states_mode(paths: Optional[list[Path]]) -> bool:
+    """Whether a config the operator passed says ``mode:`` at its top level.
+
+    The resolved config always has a mode, the shipped default's if no one else's, so
+    the files are read for whether the operator said it. One that cannot be read says
+    nothing here; ``load_config`` has already answered for it.
+    """
+    import yaml
+
+    for path in paths or []:
+        try:
+            data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if isinstance(data, dict) and data.get("mode") is not None:
+            return True
+    return False
 
 
 def main(argv: Optional[list[str]] = None) -> int:
@@ -871,12 +1055,14 @@ def main(argv: Optional[list[str]] = None) -> int:
             "output_dir": args.output_dir,
             "output_name": args.output_name,
             "reference": str(args.reference) if args.reference else None,
+            "mode": args.mode,
             "basecall.model": args.basecall_model,
             "min_reads": args.min_reads,
             "min_reads_per_construct": args.min_reads_per_construct,
             "sample.arm": args.arm,
             **sample_overrides(args),
             "on_error": args.on_error,
+            "realtime.barcode": args.barcode,
             "realtime.pod5_subdir": args.pod5_subdir,
             "realtime.poll_interval_s": args.poll_interval_s,
             "realtime.stable_polls": args.stable_polls,
@@ -895,13 +1081,17 @@ def main(argv: Optional[list[str]] = None) -> int:
     _setup_logging(out_dir, args.verbose)
     announce_run_dir(out_dir, existed=existed)
 
-    # No --mode flag: the watcher releases only *.pod5, so this driver is pod5-only. The
-    # shipped default is bam, so refuse once here rather than fail on every POD5.
-    mode = cfg.get("mode")
-    if mode != "pod5":
-        msg = (f"real-time QC requires mode=pod5, but the resolved config says "
-               f"mode={mode!r}. The watcher releases *.pod5 files and the bam branch "
-               f"would misread every one of them. Set `mode: pod5` in your --config.")
+    # A live run follows one kind of file, and which must be SAID: by --mode, or by
+    # `mode:` in a config the operator passed. The shipped default (bam) is not taken as
+    # an answer. A run folder holds both pod5/ and, when MinKNOW basecalls, bam_pass/,
+    # so watching for the wrong kind would wait on a folder that never fills, or analyse
+    # MinKNOW's basecalls where the operator meant this pipeline's.
+    mode = cfg.get("mode") if (args.mode or _states_mode(args.config)) else None
+    if mode not in ("pod5", "bam"):
+        msg = ("a live run needs to be told what to follow: --mode pod5 (MinKNOW's POD5 "
+               "files, basecalled here) or --mode bam (the BAM files MinKNOW basecalls "
+               "itself, bam_pass/ and bam_fail/). Give --mode, or `mode:` in your "
+               "--config; the shipped default is not used for a live run.")
         logger.error("%s", msg)
         return emit_error(str(msg), exit_code=2, run_dir=out_dir)
 
@@ -916,6 +1106,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         server_cfg["auto_start"] = False
 
     mimicking = args.mimic_source_dir is not None
+    if mimicking and mode != "pod5":
+        msg = "the MinKNOW mimic replays POD5 files: it needs --mode pod5"
+        logger.error("%s", msg)
+        return emit_error(str(msg), exit_code=2, run_dir=out_dir)
     if mimicking:
         # The mimic writes this directory, so it need not exist yet.
         input_dir.mkdir(parents=True, exist_ok=True)
@@ -941,15 +1135,25 @@ def main(argv: Optional[list[str]] = None) -> int:
         return emit_error(str(msg), exit_code=2, run_dir=out_dir)
 
     try:
-        pipe = RealtimePipeline(input_dir, out_dir, cfg)
+        pipe = RealtimePipeline(input_dir, out_dir, cfg, continues=existed)
+        # A run name continues the earlier run of its folder only with the same input
+        # and reference: a live run restores the earlier run's files from its manifest,
+        # so another MinKNOW run would be reported together with it (run_input.py).
+        # Exit 2 here, before anything is processed.
+        check_run_input(out_dir, run_input(driver="live", mode=mode, input_dir=input_dir,
+                                           reference=cfg["reference"]))
         if mimicking:
             pipe.mimic_params = _start_mimic(args, input_dir)
         _log_startup(pipe, cfg)
-        # One server for the whole run, so the model loads once. An existing server is
-        # adopted (and left running); otherwise one is started and later stopped.
-        with dorado_server(cfg["basecall"].get("server"),
-                           output_dir=out_dir) as server:
-            pipe.core.server_info = server
+        if mode == "pod5":
+            # One server for the whole run, so the model loads once. An existing server
+            # is adopted (and left running); otherwise one is started and later stopped.
+            with dorado_server(cfg["basecall"].get("server"),
+                               output_dir=out_dir) as server:
+                pipe.core.server_info = server
+                result = pipe.run()
+        else:
+            # A BAM run basecalls nothing: no server, no model, no GPU.
             result = pipe.run()
     except (ReferenceError, DoradoServerError) as exc:
         # An unusable reference, or a dorado-server that cannot be reached or started:
@@ -962,7 +1166,17 @@ def main(argv: Optional[list[str]] = None) -> int:
         logger.error("%s", exc)
         return emit_error(str(exc), exit_code=2, run_dir=out_dir)
 
-    return emit_result(result, run_dir=out_dir)
+    code = exit_code_for(result.get("status"))
+    # As offline: a report over no data is not a success. Judged by what became of the
+    # inputs, not by how many reads mapped: an input that was processed and holds no
+    # mapped read is a result, and an input restored from an earlier session counts.
+    failed, ingested = pipe.progress.failed, pipe.progress.ingested
+    if code == 0 and failed and not ingested:
+        logger.error(
+            "Every input failed (%d/%d); the report covers NO data. Exiting non-zero. "
+            "See run_accounting.failed_inputs in qc_result.json.", len(failed), len(failed))
+        code = 1
+    return emit_result(result, run_dir=out_dir, exit_code=code)
 
 
 if __name__ == "__main__":

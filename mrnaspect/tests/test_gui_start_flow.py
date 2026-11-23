@@ -103,11 +103,34 @@ def test_there_is_one_card_per_run_kind() -> None:
 
 def test_a_card_fixes_core_s_mode_and_the_live_flag() -> None:
     ts = _code(_TS.read_text())
-    assert re.search(r'const modeOf = \(k: Kind\) => \(k === "bam" \? "bam" : "pod5"\);', ts)
+    # BAM mode for the BAM card, and for a live run that follows MinKNOW's BAM files.
+    assert re.search(r'const readsBam = \(k: Kind\) => k === "bam" \|\| '
+                     r'\(k === "live" && liveSource === "bam"\);', ts)
+    assert re.search(r'const modeOf = \(k: Kind\) => \(readsBam\(k\) \? "bam" : "pod5"\);', ts)
     assert re.search(r'const isRealtime = \(\) => kind === "live";', ts)
     go = ts[ts.index('$("go").addEventListener("click"'):]
     call = go[go.index('invoke<string>("start_qc"'):go.index("});")]
     assert "mode: modeOf(kind)" in call and "realtime: isRealtime()" in call
+
+
+def test_a_live_run_can_follow_pod5_files_or_minknow_s_bam_files() -> None:
+    """The choice is on the live card's input screen, POD5 unless changed. Changing it
+    rebuilds the screens (a BAM run asks no model) and asks Core about the folder again;
+    the shell accepts either and writes it as the live run's one-key config."""
+    html = _HTML.read_text()
+    control = html[html.index('id="livesource"'):html.index("</span>", html.index('id="livesource"'))]
+    assert re.findall(r'data-livesource="([a-z0-9]+)"', control) == ["pod5", "bam"]
+    assert 'data-livesource="pod5" role="radio" aria-checked="true"' in control
+    assert "hidden" in html[html.index('id="livesource"') - 40:html.index('id="livesource"') + 120]
+    ts = _code(_TS.read_text())
+    assert 'let liveSource: "pod5" | "bam" = "pod5";' in ts
+    assert '($("livesource") as HTMLElement).hidden = k !== "live";' in _fn(ts, "function openFlow(")
+    change = _fn(ts, "function setLiveSource(")
+    assert "liveSource = m;" in change and "setStep(step);" in change
+    assert "describeInput()" in change
+    rs = _RS.read_text()
+    assert 'if realtime && mode != "pod5" && mode != "bam" {' in rs
+    assert 'let layer = if mode == "bam" { LIVE_LAYER_BAM } else { LIVE_LAYER_POD5 };' in rs
 
 
 def test_mode_and_live_are_no_longer_fields() -> None:
@@ -130,7 +153,7 @@ def test_each_field_sits_in_its_step(field: str, step: str) -> None:
 
 
 def _steps_of(ts: str) -> tuple[list[str], list[str]]:
-    m = re.search(r'const stepsOf = \(k: Kind\): StepId\[\] => k === "bam"\s*'
+    m = re.search(r'const stepsOf = \(k: Kind\): StepId\[\] => readsBam\(k\)\s*'
                   r'\? \[([^\]]*)\]\s*: \[([^\]]*)\];', ts)
     assert m, "stepsOf is gone"
     return (re.findall(r'"([a-z]+)"', m.group(1)), re.findall(r'"([a-z]+)"', m.group(2)))
@@ -160,7 +183,7 @@ def test_the_model_is_asked_on_pod5_cards_only() -> None:
     tree = _tree()
     assert _inside(tree, "model", "pod5only")
     ts = _code(_TS.read_text())
-    assert '($("pod5only") as HTMLElement).hidden = k === "bam"' in _fn(ts, "function openFlow(")
+    assert '($("pod5only") as HTMLElement).hidden = readsBam(k)' in _fn(ts, "function openFlow(")
     assert "model" not in _steps_of(ts)[0]
 
 
@@ -184,7 +207,9 @@ def test_save_to_waits_for_an_output_folder() -> None:
     import sys
 
     miss = _fn(_code(_TS.read_text()), "function missingOnStep(")
-    assert 'if (s === "output") return eff("output", "output_dir") ? [] : ["output"];' in miss
+    # The output step is blocked first by a missing folder, then by a run name whose run
+    # is of another input (2026-11-23; test_gui_continued_run.py).
+    assert 'if (!eff("output", "output_dir")) return ["output"];' in miss
     out = subprocess.run([sys.executable, "-m", "mrnaspect.main", "--print-config"],
                          capture_output=True, text=True, check=True).stdout
     assert json.loads(out)["resolved_config"].get("output_dir") in (None, ""), (

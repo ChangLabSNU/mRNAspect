@@ -143,7 +143,7 @@ def test_each_construct_lists_its_flags_by_mismatch_at_most_50(printed) -> None:
 
 def test_the_pdf_lists_them(printed) -> None:
     """The PDF is the archived artifact, so it is read, not inferred from the HTML."""
-    pypdf = pytest.importorskip("pypdf")
+    import pypdf  # not importorskip: without the reader this must fail, not skip
     _, pdf, sites = printed
     text = re.sub(r"\s+", " ", " ".join(
         p.extract_text() or "" for p in pypdf.PdfReader(str(pdf)).pages))

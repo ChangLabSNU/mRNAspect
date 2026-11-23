@@ -71,7 +71,7 @@ def test_the_old_name_appears_nowhere_a_reader_can_see_it(tmp_path, monkeypatch)
 def test_nor_in_the_pdf(tmp_path, monkeypatch) -> None:
     """The PDF is the archived artifact, so it is checked on its own, not inferred."""
     _, pdf = _final_report(tmp_path, monkeypatch)
-    pypdf = pytest.importorskip("pypdf")
+    import pypdf  # not importorskip: without the reader this must fail, not skip
     text = " ".join(page.extract_text() or "" for page in pypdf.PdfReader(str(pdf)).pages)
     assert OLD not in text
     assert PRODUCT_NAME in text

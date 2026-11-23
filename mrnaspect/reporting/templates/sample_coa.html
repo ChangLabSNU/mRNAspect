@@ -357,6 +357,13 @@
       }
       .footer-disclaimer { font-size: var(--type-small); color: var(--ink-secondary);
         border-top-color: var(--rule); }
+      .third-party-notices { margin-top: var(--space-m); font-size: var(--type-small);
+        color: var(--ink-secondary); }
+      .third-party-notices summary { cursor: pointer; }
+      .third-party-notices pre { white-space: pre-wrap; overflow-wrap: anywhere;
+        max-height: 60vh; overflow: auto; margin: var(--space-s) 0 0;
+        padding: var(--space-s); border: 1px solid var(--rule);
+        font-size: var(--type-small); }
       .refresh-note {
         position: sticky; top: 0; z-index: 10;
         margin: 0 0 var(--space-m); padding: var(--space-s) var(--space-m);
@@ -876,6 +883,17 @@
     Tests not performed by {{ product_name }} (e.g., dsRNA contamination, residual DNA, endotoxin)
     require complementary assays.
   </div>
+
+  {# This file holds a copy of plotly.js, which draws the figures, and of the packages
+     inside it. Their licences ask that the notice go with every copy, and a report is
+     handed on as one file, so the texts are in the file. Screen only: the PDF holds no
+     plotly. Autoescaped, like any other text. #}
+  {% if plotly_notices and not for_print %}
+  <details class="third-party-notices">
+    <summary>Third-party software in this file: licence notices</summary>
+    <pre>{{ plotly_notices }}</pre>
+  </details>
+  {% endif %}
 
 </body>
 </html>

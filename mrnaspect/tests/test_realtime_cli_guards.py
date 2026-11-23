@@ -73,11 +73,24 @@ def test_a_leftover_run_end_marker_alone_is_refused(tmp_path: Path):
 # the guards as the CLI applies them
 # ---------------------------------------------------------------------------
 
-def test_bam_mode_is_refused_before_any_input_is_touched(tmp_path: Path, capsys):
+def test_a_live_run_that_does_not_say_what_it_follows_is_refused(tmp_path: Path, capsys):
+    """The shipped default mode is not an answer: a run folder holds POD5 files and,
+    when MinKNOW basecalls, BAM files, and following the wrong kind waits for ever."""
     (tmp_path / "run").mkdir()
-    code = main(_argv(tmp_path, _cfg_file(tmp_path, mode="bam")))
+    cfg = tmp_path / "no_mode.yaml"
+    cfg.write_text("reference: /placeholder/ref.fasta\n", encoding="utf-8")
+    code = main(_argv(tmp_path, cfg))
+    said = capsys.readouterr().out
     assert code == 2
-    assert "requires mode=pod5" in capsys.readouterr().out
+    assert "--mode pod5" in said and "--mode bam" in said
+
+
+def test_the_mimic_feed_is_for_pod5_runs(tmp_path: Path, capsys):
+    (tmp_path / "run").mkdir()
+    code = main([*_argv(tmp_path, _cfg_file(tmp_path, mode="bam")),
+                 "--mimic-source-dir", str(tmp_path / "source")])
+    assert code == 2
+    assert "needs --mode pod5" in capsys.readouterr().out
 
 
 def test_a_missing_input_dir_is_refused(tmp_path: Path, capsys):

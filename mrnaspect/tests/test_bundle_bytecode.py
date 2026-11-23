@@ -83,7 +83,7 @@ def test_every_source_gets_bytecode_that_holds_a_hash_not_a_time(tmp_path: Path)
     assert tool.main(["--check", str(env)]) == 1, "nothing is compiled yet"
     assert tool.main([str(env)]) == 0
     for source in tool.sources(env):
-        assert tool.state(source) == tool.CURRENT, source
+        assert tool.state(source, env) == tool.CURRENT, source
         assert _flags(source) == 0b01, "hash-based, and not compared at import"
     assert tool.main(["--check", str(env)]) == 0
 
@@ -115,9 +115,64 @@ def test_bytecode_that_records_a_time_is_replaced(tmp_path: Path) -> None:
     source = env / "lib" / "python3.14" / "site-packages" / "pkg" / "core.py"
     py_compile.compile(str(source), cfile=str(_pyc(source)), doraise=True,
                        invalidation_mode=py_compile.PycInvalidationMode.TIMESTAMP)
-    assert tool.state(source) == "compiled against the file's time"
+    assert tool.state(source, env) == "compiled against the file's time"
     assert tool.main([str(env)]) == 0
-    assert tool.state(source) == tool.CURRENT
+    assert tool.state(source, env) == tool.CURRENT
+
+
+def test_a_compiled_file_does_not_say_where_it_was_compiled(tmp_path: Path) -> None:
+    """A .pyc holds its source's file name, by default the full path at that moment: the
+    staging folder, under the build account's home, in every compiled file of the app.
+    It is compiled with the path inside the environment instead."""
+    tool = _tool()
+    env = _env(tmp_path)
+    assert tool.main([str(env)]) == 0
+    compiled = sorted(env.rglob("*.pyc"))
+    assert len(compiled) == 4
+    for pyc in compiled:
+        assert str(tmp_path).encode() not in pyc.read_bytes(), pyc
+    source = env / "lib" / "python3.14" / "site-packages" / "pkg" / "core.py"
+    assert tool.recorded_name(source, env) == "lib/python3.14/site-packages/pkg/core.py"
+    assert b"lib/python3.14/site-packages/pkg/core.py" in _pyc(source).read_bytes()
+
+
+def test_bytecode_that_records_the_folder_it_was_compiled_in_is_compiled_again(
+        tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    """Its hash is right, so by the old rule it was current and stayed as it was: an
+    environment staged before this would have kept every such file for good."""
+    tool = _tool()
+    env = _env(tmp_path)
+    assert tool.main([str(env)]) == 0
+    source = env / "lib" / "python3.14" / "site-packages" / "pkg" / "core.py"
+    py_compile.compile(str(source), cfile=str(_pyc(source)), doraise=True,
+                       invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+    assert str(tmp_path).encode() in _pyc(source).read_bytes()
+    assert tool.state(source, env) == "records the folder it was compiled in"
+    assert tool.main(["--check", str(env)]) == 1
+    assert "pkg/core.py: records the folder it was compiled in" in capsys.readouterr().err
+    assert tool.main([str(env)]) == 0
+    assert tool.state(source, env) == tool.CURRENT
+    assert str(tmp_path).encode() not in _pyc(source).read_bytes()
+
+
+def test_a_module_loaded_from_such_bytecode_still_names_its_file_where_it_is(
+        tmp_path: Path) -> None:
+    """Python puts the real path back when it loads a .pyc beside its source, so a
+    traceback in the app names the file as it is on that computer."""
+    tool = _tool()
+    env = _env(tmp_path)
+    assert tool.main([str(env)]) == 0
+    site = env / "lib" / "python3.14" / "site-packages"
+    before = _times(env)
+    code = ("import sys; sys.path.insert(0, sys.argv[1]); import pkg.core; "
+            "print(pkg.core.f.__code__.co_filename); print(pkg.core.__cached__)")
+    done = subprocess.run([sys.executable, "-I", "-c", code, str(site)],
+                          capture_output=True, text=True, timeout=60, cwd="/")
+    assert done.returncode == 0, done.stderr
+    named, cached = done.stdout.split()
+    assert named == str(site / "pkg" / "core.py")
+    assert cached == str(_pyc(site / "pkg" / "core.py"))
+    assert _times(env) == before, "the module was loaded from its .pyc, not compiled again"
 
 
 def test_bytecode_of_an_older_source_is_caught(tmp_path: Path,
@@ -129,12 +184,12 @@ def test_bytecode_of_an_older_source_is_caught(tmp_path: Path,
     assert tool.main([str(env)]) == 0
     source = env / "lib" / "python3.14" / "site-packages" / "pkg" / "core.py"
     source.write_text("def f():\n    return 3\n")
-    assert tool.state(source) == "compiled from another version of the source"
+    assert tool.state(source, env) == "compiled from another version of the source"
     assert tool.main(["--check", str(env)]) == 1
     assert "pkg/core.py: compiled from another version of the source" \
         in capsys.readouterr().err
     assert tool.main([str(env)]) == 0, "a second staging compiles what changed"
-    assert tool.state(source) == tool.CURRENT
+    assert tool.state(source, env) == tool.CURRENT
 
 
 def test_a_second_run_compiles_nothing(tmp_path: Path,
@@ -180,7 +235,7 @@ def test_bytecode_compiled_by_another_python_is_not_current(tmp_path: Path) -> N
     source = env / "lib" / "python3.14" / "os.py"
     pyc = _pyc(source)
     pyc.write_bytes(b"\x00\x00\r\n" + pyc.read_bytes()[4:])
-    assert tool.state(source) == "compiled by another Python"
+    assert tool.state(source, env) == "compiled by another Python"
     assert tool.main(["--check", str(env)]) == 1
 
 

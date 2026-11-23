@@ -18,6 +18,7 @@ describe the code in the app, and the report says so beside it.
 
     python3 scripts/bundle_build_record.py <env> --source <checkout>           write
     python3 scripts/bundle_build_record.py --check <env> [--source <checkout>]  verify only
+    python3 scripts/bundle_build_record.py --check <env> --expect <commit>      a release
 
 Writing replaces whatever record is there. That matters: the staged environment is reused
 between stagings and the record is not one of the files pip installs, so pip would leave
@@ -26,13 +27,21 @@ commit to give: the record is removed, and this is said.
 
 `--check` writes nothing; it runs on the built, sealed app. With `--source` naming a git
 checkout it also expects a record to be there (staging from a checkout always writes
-one), and notes when the checkout has moved on from the commit the app was built from.
+one), and fails when the checkout is at another commit than the app was built from: the
+app is then not this source's. That used to be a note and a pass, and a release was
+checked against the wrong commit that way.
+
+`--expect` is for a release: the commit the release is of, as 40 hexadecimal characters,
+or a name such as its tag, which is resolved in `--source`. The check fails unless the
+record names exactly that commit and was written from an unmodified tree. With the
+commit in full it needs no checkout, so it runs wherever the release is unpacked.
 
 git is started only for a source that has a `.git`: on a Mac without Apple's command line
 developer tools, `/usr/bin/git` is a stand-in that opens a system dialog when run.
 
 Exit 0: written, or verified. Exit 1: git failed, or the record is missing where one is
-expected, or it is not a record. Exit 2: not given an environment.
+expected, or it is not a record, or it names another commit than the checkout or the
+release. Exit 2: not given an environment.
 
 Standard library only: it runs on the interpreter of the environment it writes into.
 """
@@ -146,7 +155,24 @@ def write(env: Path, source: Path, now: datetime | None = None) -> int:
     return 0
 
 
-def check(env: Path, source: Path | None) -> int:
+def resolve(expect: str, source: Path | None) -> str:
+    """The commit `expect` names: itself when it is one, else what git resolves it to.
+
+    Raises:
+        RuntimeError: When a name is given with no checkout to resolve it in, or git
+            does not know it.
+    """
+    if _COMMIT.match(expect):
+        return expect
+    if source is None or not is_checkout(source):
+        raise RuntimeError(f"{expect!r} is not a commit in full (40 hexadecimal "
+                           f"characters), and no --source checkout was given to resolve "
+                           f"it in")
+    # ^{commit}: an annotated tag is an object of its own, pointing at the commit.
+    return git(source, "rev-parse", "--verify", "--quiet", f"{expect}^{{commit}}")
+
+
+def check(env: Path, source: Path | None, expect: str | None = None) -> int:
     """Verify the record in `env`; writes nothing. Returns the exit code."""
     package = package_folder(env)
     if package is None:
@@ -158,7 +184,7 @@ def check(env: Path, source: Path | None) -> int:
     try:
         text = target.read_text(encoding="utf-8")
     except FileNotFoundError:
-        if from_checkout:
+        if from_checkout or expect is not None:
             print(f"no {NAME} in the app's mrnaspect package: staging from a git checkout "
                   f"always writes one, so this app's results name no commit",
                   file=sys.stderr)
@@ -175,15 +201,34 @@ def check(env: Path, source: Path | None) -> int:
     if why is not None:
         print(f"{NAME}: {why}", file=sys.stderr)
         return 1
-    print(f"  ok    {describe(record)}")
-    if from_checkout:
+    if expect is not None:
+        # A release: the record against the commit the release is of.
+        try:
+            wanted = resolve(expect, source)
+        except RuntimeError as exc:
+            print(f"FAILED: {exc}", file=sys.stderr)
+            return 1
+        if record["commit"] != wanted:
+            print(f"the app was built from {record['commit']}, and the release is "
+                  f"{wanted}" + ("" if wanted == expect else f" ({expect})")
+                  + ": its results would name a commit that is not the release's",
+                  file=sys.stderr)
+            return 1
+        if record["dirty"]:
+            print(f"the app was built from {wanted} with the working tree modified: the "
+                  f"commit does not describe the code in the app", file=sys.stderr)
+            return 1
+    elif from_checkout:
         try:
             head = git(source, "rev-parse", "HEAD")
         except RuntimeError:
             head = None     # the record is what is being checked, not this checkout
         if head is not None and head != record["commit"]:
-            print(f"  note  this checkout is at {head}: the app was built from another "
-                  f"commit")
+            print(f"this checkout is at {head}, and the app was built from another "
+                  f"commit, {record['commit']}. Build the app again from this checkout, "
+                  f"or name the commit it should be of with --expect.", file=sys.stderr)
+            return 1
+    print(f"  ok    {describe(record)}")
     return 0
 
 
@@ -193,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check", action="store_true", help="verify only; write nothing")
     parser.add_argument("--source", type=Path, default=None,
                         help="the checkout the environment is built from")
+    parser.add_argument("--expect", default=None, metavar="COMMIT",
+                        help="with --check: the commit a release is of (in full, or a "
+                             "name such as its tag, resolved in --source)")
     parser.add_argument("env", type=Path, help="a staged environment, or the one in an app")
     args = parser.parse_args(argv)
     if not (args.env / "lib").is_dir():
@@ -200,7 +248,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     try:
         if args.check:
-            return check(args.env.resolve(), args.source)
+            return check(args.env.resolve(), args.source, args.expect)
+        if args.expect is not None:
+            print("--expect belongs with --check: a record is written from --source",
+                  file=sys.stderr)
+            return 2
         if args.source is None:
             print("--source is needed to write a record", file=sys.stderr)
             return 2

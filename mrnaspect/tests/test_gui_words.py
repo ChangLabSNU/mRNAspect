@@ -115,7 +115,7 @@ def test_the_label_before_a_number_opens_with_a_capital() -> None:
 #: Words that keep their capitals inside a label: names, acronyms and units.
 _PROPER = {"MinKNOW", "POD5", "BAM", "BAMs", "FASTA", "QC", "PDF", "IQR", "MAPQ", "Q", "ID",
            "GPU", "CPU", "MIT", "License", "Finder", "Oxford", "Nanopore", "Technologies",
-           "Tauri", "Python", "WeasyPrint", "Dorado", "Qbiolab", "Mac", "U", "I", "A",
+           "Tauri", "Python", "WeasyPrint", "Dorado", "Seoul", "National", "University", "Mac", "U", "I", "A",
            "N1-methylpseudouridine", "Poly(A)", "Overview", "Rust", "Apache-2.0", "Copyright"}
 
 

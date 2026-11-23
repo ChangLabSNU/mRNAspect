@@ -15,6 +15,11 @@ pyphen's hyphenation dictionaries go the same way (L6). pyphen itself is tri-lic
 and stays, because WeasyPrint imports it; the dictionaries are "distributed under GPL,
 LGPL and/or MPL" each, and the report never hyphenates, so none is ever opened.
 
+pypdf goes for another reason: not its licence, but that the app has no use for it. The
+tests read a PDF back with it; the app writes PDFs and reads none. It is in the one
+environment the tests and the app are both made from, so it rode into the first release,
+at a version with a published advisory. What the app does not carry it cannot expose.
+
     python3 scripts/strip_bundle_env.py <env>           remove, then verify
     python3 scripts/strip_bundle_env.py --check <env>   verify only (a built .app's env)
 
@@ -70,6 +75,13 @@ LEFT_OUT: dict[str, LeftOut] = {
         libraries=("libreadline", "libhistory"),
         bound=("lib/python*/lib-dynload/readline.*",),
         modules=("readline",),
+    ),
+    "pypdf": LeftOut(
+        licence="BSD-3-Clause",
+        why="only the tests read a PDF back; the app writes PDFs and reads none",
+        libraries=(),
+        bound=(),
+        modules=("pypdf",),
     ),
 }
 

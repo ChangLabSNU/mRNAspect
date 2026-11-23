@@ -139,7 +139,13 @@ def test_the_licence_is_stated_where_tools_read_it() -> None:
     assert (ROOT / "LICENSE").read_text().startswith("MIT License")
     pyproject = (ROOT / "pyproject.toml").read_text()
     assert re.search(r'^license = "MIT"$', pyproject, re.M)
-    assert re.search(r'^license-files = \["LICENSE"\]$', pyproject, re.M)
+    # This project's own licence file first; any other entry is the notices of software
+    # the package carries (the plotly bundle's), never a second licence for this code.
+    files = re.search(r'^license-files = \[(.*)\]$', pyproject, re.M)
+    assert files, "pyproject.toml names no licence files"
+    listed = re.findall(r'"([^"]+)"', files.group(1))
+    assert listed[0] == "LICENSE", listed
+    assert all(name.endswith(".LICENSES.txt") for name in listed[1:]), listed
     cargo = (ROOT / "gui" / "src-tauri" / "Cargo.toml").read_text()
     assert re.search(r'^license = "MIT"$', cargo, re.M)
 

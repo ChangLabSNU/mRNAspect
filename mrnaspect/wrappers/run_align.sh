@@ -39,6 +39,8 @@ REF=$2
 
 # Set by wrappers/aligner.py from the running environment; run by hand (e.g. under
 # `pixi run`), the tools on PATH are used.
+# Always used quoted: inside the desktop app these are absolute paths, and the app may
+# sit in a folder whose name holds a space.
 MINIMAP2=${MINIMAP2:-minimap2}
 SAMTOOLS=${SAMTOOLS:-samtools}
 # 4th arg: minimap2 flag string. Unquoted on use so it word-splits into separate flags.
@@ -66,7 +68,9 @@ fi
 # path), minimap2 exits 0 and maps nothing. The driver checks this too; repeated here
 # because this script can be run on its own.
 if [[ "$REF" == *.gz ]]; then
-    REF_RECORDS=$(zcat -- "$REF" | grep -c '^>' || true)
+    # `gzip -dc`, not `zcat`: the zcat of macOS is the one for compress(1) files. It looks
+    # for "<name>.Z", finds none, and the count below is then 0 for a good reference.
+    REF_RECORDS=$(gzip -dc -- "$REF" | grep -c '^>' || true)
 else
     REF_RECORDS=$(grep -c '^>' -- "$REF" || true)
 fi
@@ -124,15 +128,17 @@ START_MS=$(now_ms)
 
 # --- publish by rename --------------------------------------------------------
 # A restart trusts whatever is at $ALIGNED_BAM, so it must only appear complete and
-# indexed: build under .partial, then rename the index first and the BAM second.
-PARTIAL_BAM="${ALIGNED_BAM}.partial"
+# indexed: build under a partial- name, then rename the index first and the BAM second.
+# The name is a prefix because a finished output starts with aligned_ or basecall_, so
+# no input name can make a finished output look unfinished (wrappers/_shell.py).
+PARTIAL_BAM="$RESULTS_DIR/partial-aligned_${PREFIX}.bam"
 rm -f "$PARTIAL_BAM" "$PARTIAL_BAM".bai
 
 # Merge every chunk BAM (same header), so every basecalled read reaches minimap2.
-$SAMTOOLS cat "${UBAMS[@]}" | \
-    $SAMTOOLS fastq -T "$TAGS" - | \
-    $MINIMAP2 $ALIGN_FLAGS $THREAD_FLAGS "$REF" - 2>"$MINIMAP2_LOG" | \
-    $SAMTOOLS sort -o "$PARTIAL_BAM" -
+"$SAMTOOLS" cat "${UBAMS[@]}" | \
+    "$SAMTOOLS" fastq -T "$TAGS" - | \
+    "$MINIMAP2" $ALIGN_FLAGS $THREAD_FLAGS "$REF" - 2>"$MINIMAP2_LOG" | \
+    "$SAMTOOLS" sort -o "$PARTIAL_BAM" -
 
 # --- every primary read in comes out once --------------------------------------
 # minimap2 -a writes every read it is given as one primary record, mapped or not, so the
@@ -142,8 +148,8 @@ COUNT_THREADS=""
 if [[ -n "${ALIGN_THREADS:-}" ]]; then
     COUNT_THREADS="-@ $ALIGN_THREADS"
 fi
-IN_PRIMARY=$($SAMTOOLS cat "${UBAMS[@]}" | $SAMTOOLS view -c -F 0x900 $COUNT_THREADS -)
-OUT_PRIMARY=$($SAMTOOLS view -c -F 0x900 $COUNT_THREADS "$PARTIAL_BAM")
+IN_PRIMARY=$("$SAMTOOLS" cat "${UBAMS[@]}" | "$SAMTOOLS" view -c -F 0x900 $COUNT_THREADS -)
+OUT_PRIMARY=$("$SAMTOOLS" view -c -F 0x900 $COUNT_THREADS "$PARTIAL_BAM")
 echo "[Alignment] primary reads: $IN_PRIMARY in, $OUT_PRIMARY out"
 if [[ "$IN_PRIMARY" -ne "$OUT_PRIMARY" ]]; then
     echo "ERROR: $IN_PRIMARY primary read(s) went into the alignment and $OUT_PRIMARY came out."
@@ -152,7 +158,7 @@ if [[ "$IN_PRIMARY" -ne "$OUT_PRIMARY" ]]; then
     exit 1
 fi
 
-$SAMTOOLS index "$PARTIAL_BAM"
+"$SAMTOOLS" index "$PARTIAL_BAM"
 
 mv -f "${PARTIAL_BAM}.bai" "${ALIGNED_BAM}.bai"
 mv -f "$PARTIAL_BAM" "$ALIGNED_BAM"
@@ -166,4 +172,4 @@ echo "=== done ==="
 echo "Aligned BAM: $ALIGNED_BAM"
 echo "Index:       ${ALIGNED_BAM}.bai"
 echo ""
-$SAMTOOLS flagstat "$ALIGNED_BAM" | head -5
+"$SAMTOOLS" flagstat "$ALIGNED_BAM" | head -5

@@ -130,17 +130,28 @@ PY
 check $? "imports resolve from the copy"
 
 say "3. the external binaries in the copy execute"
+# The command's own status decides, and it is read before the output is shortened for
+# display. Any non-empty first line used to count as a version, and a binary that is
+# not there prints one: "No such file or directory".
 for tool in minimap2 samtools; do
-    v=$(run "$DEST/bin/$tool" --version 2>&1 | head -1)
-    if [ -n "$v" ]; then ok "$tool: $v"; else bad "$tool did not run"; fi
+    out=$(run "$DEST/bin/$tool" --version 2>&1); status=$?
+    first=$(printf '%s\n' "$out" | head -1)
+    if [ "$status" -eq 0 ] && [ -n "$first" ]; then
+        ok "$tool: $first"
+    else
+        bad "$tool did not run (exit $status): ${first:-no output}"
+    fi
 done
 
 say "4. WeasyPrint's native stack (the one most likely to break on a move)"
-run "$PY" -c '
+# Python's status, taken before the output goes through tail: a pipeline's status is its
+# last command's, so a failed import used to pass on tail's 0.
+out=$(run "$PY" -c '
 import weasyprint, weasyprint.text.ffi as ffi
 print("  pango/harfbuzz loaded:", ffi.pango is not None)
-' 2>&1 | tail -3
-check $? "WeasyPrint binds its native libraries"
+' 2>&1); status=$?
+printf '%s\n' "$out" | tail -3
+check "$status" "WeasyPrint binds its native libraries"
 
 say "5. the whole pipeline, from the copy"
 # One BAM, in a folder of its own: the fixture folder holds BAMs called by two basecaller

@@ -257,11 +257,34 @@ def test_python_that_would_be_compiled_again_fails_check_11(tmp_path: Path) -> N
 def test_an_app_without_its_build_record_fails_check_12(tmp_path: Path) -> None:
     """Staging from a checkout always writes it; without it, a result names no build."""
     code, out, err = _run(_app(tmp_path, _IMPORTS_OK, record=_RECORD_MISSING), tmp_path)
-    assert "FAIL  the app has no usable record of the commit it was built from" in out, \
-        out + err
+    assert ("FAIL  the app has no usable record of the commit it was built from, or it is "
+            "of another commit") in out, out + err
     assert "no _build.json in the app's mrnaspect package" in out, out
     assert "11 passed, 1 failed" in out, out
     assert code == 1
+
+
+def test_a_release_s_commit_is_handed_to_the_record_check(tmp_path: Path) -> None:
+    """The second argument is the commit a release is of; check 12 asks for exactly it."""
+    seen = tmp_path / "record-args.txt"
+    record = f"echo \"$*\" > '{seen}'; {_RECORD_OK}"
+    app = _app(tmp_path, _IMPORTS_OK, record=record)
+    proc = subprocess.run(["bash", str(_SCRIPT), str(app), _COMMIT], capture_output=True,
+                          text=True, env=_environ(tmp_path, "Linux"), timeout=60)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert f"--expect {_COMMIT}" in seen.read_text()
+    # Without it the app is held to the checkout it is checked from.
+    subprocess.run(["bash", str(_SCRIPT), str(app)], capture_output=True, text=True,
+                   env=_environ(tmp_path, "Linux"), timeout=60)
+    assert "--expect" not in seen.read_text() and "--source" in seen.read_text()
+
+
+def test_an_app_of_another_commit_fails_check_12(tmp_path: Path) -> None:
+    other = ("echo 'this checkout is at ffff, and the app was built from another commit, "
+             f"{_COMMIT}.' >&2; exit 1")
+    code, out, err = _run(_app(tmp_path, _IMPORTS_OK, record=other), tmp_path)
+    assert "built from another commit" in out, out + err
+    assert "11 passed, 1 failed" in out and code == 1
 
 
 def test_core_that_does_not_report_the_recorded_commit_fails_check_12(

@@ -254,6 +254,18 @@ fn resolve_python() -> Result<PathBuf, String> {
         tried.join(", ")))
 }
 
+/// The config layer the shell writes for a live run, one per kind of file it follows.
+/// One key each, `mode`, and nothing else: every key here overrides the operator's own
+/// config without a word on screen.
+const LIVE_LAYER_POD5: &str = "# written by the GUI: a live run is told what it follows by a config.
+# Passed as the LAST --config, so it overrides mode and nothing else.
+mode: pod5
+";
+const LIVE_LAYER_BAM: &str = "# written by the GUI: a live run is told what it follows by a config.
+# Passed as the LAST --config, so it overrides mode and nothing else.
+mode: bam
+";
+
 #[tauri::command(async)]
 fn start_qc(app: tauri::AppHandle, input_dir: String, reference: String,
             output_dir: String, mode: String, run_name: String, basecall_model: String,
@@ -268,11 +280,12 @@ fn start_qc(app: tauri::AppHandle, input_dir: String, reference: String,
     if !reference_text.trim().is_empty() && !reference.trim().is_empty() {
         return Err("both a reference file and a pasted reference were given; send one".into());
     }
-    // Real-time QC is pod5-only by construction: its watcher releases *.pod5 and nothing
-    // else. Refused here rather than letting Core refuse later, so the operator is told
-    // before a run directory and a log file exist for a run that cannot start.
-    if realtime && mode != "pod5" {
-        return Err("live mode watches for arriving POD5 files; it needs mode=pod5".into());
+    // A live run follows MinKNOW's POD5 files (basecalled here) or the BAM files MinKNOW
+    // basecalls itself, and the window sends which as `mode`. Anything else is refused
+    // here rather than by Core later, so the operator is told before a run directory and
+    // a log file exist for a run that cannot start.
+    if realtime && mode != "pod5" && mode != "bam" {
+        return Err(format!("a live run follows POD5 or BAM files; got mode={mode:?}"));
     }
     // The run's arm, from the window's m1Ψ box (I4). Sent as --arm, so it beats the
     // config's sample.arm like every typed field; the config's sample.arms still names the
@@ -300,7 +313,7 @@ fn start_qc(app: tauri::AppHandle, input_dir: String, reference: String,
     // re-implement the rule and cannot disagree with it.
     let place = print_config(&app, &python, &config,
                              &[("--output-dir", output_dir.as_str()),
-                               ("--output-name", run_name.as_str())])?;
+                               ("--output-name", run_name.as_str())], &[])?;
     if let Some(e) = place["run_dir_error"].as_str() {
         return Err(e.to_string());
     }
@@ -349,22 +362,18 @@ fn start_qc(app: tauri::AppHandle, input_dir: String, reference: String,
     // so they have the precedence every other setting has: anything more specific wins.
     let machine = machine_layer(&app)?;
     let machine_str = machine.as_ref().map(|p| p.to_string_lossy().to_string());
-    // `mrnaspect-realtime` has no --mode flag and refuses to start unless the RESOLVED config
-    // says pod5 — deliberately, because its shipped default is `mode: bam` and a config
-    // saying bam almost always means the operator is pointing at bam_pass, where the
-    // watcher would find no POD5 and wait forever. So the one thing it needs is written
-    // out here.
+    // `mrnaspect-realtime` must be TOLD what it follows, POD5 files or MinKNOW's BAM files:
+    // it does not take the shipped default (`mode: bam`) as an answer, because a run
+    // folder holds both kinds and following the wrong one waits for ever. So the one
+    // thing it needs, the card's mode, is written out here.
     //
     // Into the run's own output directory, not a temp file: it then sits beside the logs
     // as a record of what the run was actually given, and it does not vanish while the
     // run is still reading it.
     let cfg_path = out.join(format!("{stem}_realtime.yaml"));
     if realtime {
-        std::fs::write(&cfg_path,
-            "# written by the GUI: mrnaspect-realtime is pod5-only and takes this from a config.
-# Passed as the LAST --config, so it overrides mode and nothing else.
-mode: pod5
-")
+        let layer = if mode == "bam" { LIVE_LAYER_BAM } else { LIVE_LAYER_POD5 };
+        std::fs::write(&cfg_path, layer)
             .map_err(|e| format!("could not write {}: {e}", cfg_path.display()))?;
     }
     let cfg_str = cfg_path.to_string_lossy().to_string();
@@ -497,12 +506,26 @@ mode: pod5
 /// Rust; the attribute only moves the call onto a worker. Every other command in this
 /// file either returns at once or spawns without waiting, which is why this is the first
 /// one that needs it.
+///
+/// Output dir and Run name go with it, as start_qc passes them, so the answer's
+/// `run_dir_state` is about the folder a Start would write: whether that run name
+/// CONTINUES an earlier run, and what the earlier run left (2026-11-23). The input, the
+/// reference, the card's mode and whether it is a live run go too, so Core can say
+/// whether the run there would REFUSE this Start (`refusal`): a run name continues a run
+/// only with the same input and reference. Blank fields are dropped by print_config, so
+/// the config's values answer, as before.
 #[tauri::command(async)]
-fn read_config(app: tauri::AppHandle, config: String)
+fn read_config(app: tauri::AppHandle, config: String, output_dir: String, run_name: String,
+               input_dir: String, reference: String, mode: String, live: bool)
     -> Result<Value, String>
 {
     let python = resolve_python()?;
-    print_config(&app, &python, &config, &[])
+    let flags: &[&str] = if live { &["--live"] } else { &[] };
+    print_config(&app, &python, &config,
+                 &[("--output-dir", output_dir.as_str()), ("--output-name", run_name.as_str()),
+                   ("--input-dir", input_dir.as_str()), ("--reference", reference.as_str()),
+                   ("--mode", mode.as_str())],
+                 flags)
 }
 
 /// Which folder a run of this kind reads, from any level of a MinKNOW run the operator
@@ -541,8 +564,10 @@ fn describe_input(app: tauri::AppHandle, config: String, path: String,
 /// the order start_qc passes them. ONE function for both askers -- the window's hints, and
 /// start_qc deciding where the run writes -- so they cannot be asked two different
 /// questions; until I8 they were, and three of the four path hints were false for the run.
-/// `extra` is the window's own values on top, passed only when typed.
-fn print_config(app: &tauri::AppHandle, python: &Path, config: &str, extra: &[(&str, &str)])
+/// `extra` is the window's own values on top, passed only when typed; `flags` are passed
+/// as they are (read_config's `--live`).
+fn print_config(app: &tauri::AppHandle, python: &Path, config: &str, extra: &[(&str, &str)],
+                flags: &[&str])
     -> Result<Value, String>
 {
     let mut cmd = Command::new(python);
@@ -559,6 +584,9 @@ fn print_config(app: &tauri::AppHandle, python: &Path, config: &str, extra: &[(&
         if !value.trim().is_empty() {
             cmd.arg(flag).arg(value.trim());
         }
+    }
+    for &flag in flags {
+        cmd.arg(flag);
     }
     let out = cmd.output()
         .map_err(|e| format!("could not run {}: {e}", python.display()))?;

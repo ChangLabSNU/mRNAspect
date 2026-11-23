@@ -91,8 +91,13 @@ sample:
   arm: null
   arms: {}                 # e.g. {construct_B: U}
 
-# Real-time driver only; ignored offline.
+# Real-time driver only; ignored offline. A live run must be told what it follows, by
+# --mode or `mode:` in a config of your own: pod5 (basecalled here) or bam (the BAM files
+# MinKNOW basecalls, bam_pass/ and bam_fail/). The `mode` above is not used for it.
 realtime:
+  # For a live BAM run of a barcoded run: the one barcode to follow, by its folder name
+  # (barcode01). Barcodes are never read together.
+  barcode: null
   poll_interval_s: 5.0
   stable_polls: 7          # consecutive unchanged polls before a POD5 is called complete
   progress_interval_s: 30.0

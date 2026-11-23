@@ -2,7 +2,7 @@
 name = "mrnaspect-shell"
 version = "0.1.0"
 description = "Desktop shell for mRNAspect: Nanopore direct-RNA QC for mRNA therapeutics"
-authors = ["Qbiolab"]
+authors = ["Seoul National University"]
 license = "MIT"
 edition = "2021"
 

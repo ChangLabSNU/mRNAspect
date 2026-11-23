@@ -119,7 +119,7 @@ def test_an_applied_correction_leaves_no_stale_reason_in_the_record(declared) ->
 
 def test_the_pdf_carries_the_corrected_value_too(declared) -> None:
     """The PDF is the archived artifact, so it is checked, not inferred from the HTML."""
-    pypdf = pytest.importorskip("pypdf")
+    import pypdf  # not importorskip: without the reader this must fail, not skip
     text = " ".join(p.extract_text() or "" for p in
                     pypdf.PdfReader(str(declared / "report_run_end.pdf")).pages)
     text = re.sub(r"\s+", " ", text)

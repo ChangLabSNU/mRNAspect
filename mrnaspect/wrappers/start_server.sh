@@ -126,7 +126,7 @@ print(select_devices({**DEFAULTS, 'n_devices': 1}))" 2>&1); then
         echo "Log:    $LOG_PATH"
         echo ""
 
-        nohup $SERVER \
+        nohup "$SERVER" \
             --port "$PORT" \
             --use_tcp \
             --device "$DEVICE" \

@@ -19,6 +19,11 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC="$ROOT/.pixi/envs/default"
 DEST="$ROOT/dist/bundle-env"
+# The folder the environment is really in. pixi can keep environments outside the
+# checkout (`detached-environments`, which a release build uses so that the files conda
+# writes its install folder into do not name the checkout): .pixi/envs is then a link, and
+# what those files hold is the folder it leads to. The font step below looks for that path.
+[ -d "$SRC" ] && SRC="$(cd "$SRC" && pwd -P)"
 
 fail() { printf '\n  FAIL  %s\n' "$*" >&2; exit 1; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -56,26 +61,33 @@ else
     printf '%s' "$WANT" > "$STAMP"
 fi
 
-step "Removing the editable pointer"
-# The copy inherits the development install. Both the finder and its .pth have to go, or
-# the real install below lands beside a shim that still wins on sys.meta_path.
-# Also runs on a REUSED tree: a previous `pixi run dev-install` can have put one back.
+step "Leaving out pixi's note of the project this environment belongs to"
+# conda-meta/pixi is pixi's own record of the environment it manages: the full path of the
+# checkout's pixi.toml, the environment's name, pixi's version and a hash of the lock. pixi
+# reads it to decide whether to install again; nothing in the app reads it, and it is the
+# one file of the environment that names the checkout. The first release build's read-back
+# failed on it, naming the release clone (check_release.py check 1, 2026-11-23). Also on a
+# REUSED tree, which an earlier staging copied it into.
+rm -f "$DEST/conda-meta/pixi"
+[ ! -e "$DEST/conda-meta/pixi" ] || fail "could not remove $DEST/conda-meta/pixi"
+printf '  ok    conda-meta/pixi left out (it names %s)\n' "$ROOT"
+
+step "Taking the previous Core out"
+# The copy inherits the development install: an editable finder and its .pth, pointing
+# back at this checkout. A REUSED tree holds the Core of the last staging. Either has to
+# go whole before the new one is installed, and "whole" is the point: this step used to
+# delete the installed package's .dist-info, its RECORD with it, and then install over the
+# files still there. With no record the installer removed none of them, so a module that
+# had been deleted or renamed in the source stayed in the app and still imported.
 #
-# The globs name NO distribution. They used to be `__editable__*mrnaspect*` and
-# `mrnaspect-*.dist-info`, and renaming the distribution to mrnaspect (2026-10-22) silently
-# made both match nothing — setuptools derives those filenames from the DISTRIBUTION name,
-# not the import name. The staged tree stayed clean only because `pip install .`
-# uninstalls the same distribution first and takes its editable files with it. That is
-# pip's behaviour doing the job this step is supposed to do, which is not a guarantee.
+# The script removes the installed Core through pip while its RECORD is there, then what
+# no record lists: any editable finder, the metadata folders, and whatever is left of the
+# package folder. The distribution's name is read from pyproject.toml, not written here:
+# the files are named after the DISTRIBUTION, and a rename once made a glob match nothing.
 #
-# `__editable__*` alone is safe here: a pixi environment installs everything else through
-# conda, so ours is the only editable install in it. The dist-info is read from
-# pyproject.toml so it cannot go stale again.
-DIST="$(sed -n 's/^name = "\(.*\)"/\1/p' "$ROOT/pyproject.toml" | head -1)"
-[ -n "$DIST" ] || fail "could not read the distribution name from pyproject.toml"
-find "$DEST"/lib/python*/site-packages -maxdepth 1 \
-     \( -name '__editable__*' -o -name "$DIST-*.dist-info" \) \
-     -exec rm -rf {} + 2>/dev/null || true
+# Here, before the steps below read the environment; the install comes after them.
+"$DEST/bin/python" -I "$ROOT/scripts/bundle_install_core.py" "$DEST" --source "$ROOT" --remove \
+    || fail "the previous Core could not be taken out of $DEST (the lines above say why)"
 
 step "Leaving out what the app must not carry"
 # readline is GPL-3.0-only and comes with every solve, because conda-forge's Python depends
@@ -140,11 +152,18 @@ step "Writing the third parties' notices"
     || fail "the third parties' notices could not be written into $DEST"
 
 step "Installing Core for real"
-# --no-deps for the same reason dev-install uses it: conda is the sole provider of
-# binaries here, and letting the installer resolve would swap conda's pysam (built as a
-# matched pair with its htslib) for a PyPI wheel carrying its own.
-"$DEST/bin/python" -m pip install "$ROOT" \
-    --no-deps --no-build-isolation --no-cache-dir --quiet
+# From a wheel built for this staging out of a clean copy of the source, installed by name
+# and version (scripts/bundle_install_core.py). Not from the checkout by path: the
+# installer writes the path it installed from into the package's metadata
+# (direct_url.json), and that was the build account's home folder inside every app.
+# Nothing is written into the checkout, and nothing left there by an earlier build can
+# reach the wheel. Afterwards the installed files are compared with the wheel's own list.
+#
+# No dependency is resolved, for the same reason dev-install uses --no-deps: conda is the
+# sole provider of binaries here, and letting the installer resolve would swap conda's
+# pysam (built as a matched pair with its htslib) for a PyPI wheel carrying its own.
+"$DEST/bin/python" -I "$ROOT/scripts/bundle_install_core.py" "$DEST" --source "$ROOT" \
+    || fail "Core could not be installed into $DEST (the lines above say why)"
 
 step "Recording the commit this environment is built from"
 # Inside the app Core is a copy in site-packages, in no repository, so there is no git to
@@ -213,8 +232,9 @@ printf '  ok    weasyprint writes a PDF without the hyphenation dictionaries\n'
 # The route the shell actually uses. `lib.rs` runs `python3 -m mrnaspect.main`, never
 # the console script, and the difference is not cosmetic: its shebang is an ABSOLUTE
 # path to its build-time interpreter, so bin/<name> does not survive being
-# bundled to /Applications. `-m` does. Checking the console script instead would pass on
-# this machine and prove nothing about the .app.
+# bundled to /Applications. `-m` does. The console scripts are no longer in the staged
+# environment at all: the install step takes them out, since that path is the build
+# machine's.
 if ! (cd / && "$DEST/bin/python3" -I -m mrnaspect.main --help >/dev/null 2>&1); then
   fail "python3 -m mrnaspect.main does not run from the staged env"
 fi

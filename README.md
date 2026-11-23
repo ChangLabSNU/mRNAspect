@@ -98,9 +98,16 @@ back shortened, not lost, so this does not catch it.
   read splitting feed the read rule. The move table (`mv`) is left behind unless
   `basecall.emit_moves` is on: carrying it about doubles the alignment time.
 - **Failed reads too.** MinKNOW writes `bam_pass/` and `bam_fail/`. Leaving `bam_fail/`
-  out is a qscore filter, and m1Ψ reads have lower qscores, so put both in one folder.
+  out is a qscore filter, and m1Ψ reads have lower qscores. Give the run folder and both
+  are read. Give `bam_pass/` and only the passed reads are: the number of failed-read
+  files left out is shown before the run starts and written in the report. In the
+  desktop app this is a tick box on the input card, ticked when the run folder is picked.
+  `bam_fail/` given by itself is the failed reads only, and the passed-read files left
+  out are shown and written in the same way.
 - **One folder, not searched recursively**, on purpose: barcode subfolders would be
-  pooled silently (see below).
+  pooled silently (see below). The one exception is a run folder's own `bam_pass/` and
+  `bam_fail/`. A barcoded run has a folder per barcode under each, so give one barcode's
+  folder; to add its failed reads, put the files of both of its folders in one folder.
 - No GPU and no dorado-server. minimap2 runs on the CPU, on every CPU the process may use
   unless `align.threads` says otherwise; the aligned BAMs are kept under `basecall_cache/`
   in the run folder.
@@ -163,6 +170,9 @@ mrnaspect --config my_run.yaml --mode bam --output-name batch_0412
 
 # live, watching a MinKNOW run directory (read "Live runs" below first)
 mrnaspect-realtime --input-dir /path/to/run --output-dir ./out --config my_config.yaml
+
+# live, following the BAM files MinKNOW basecalls itself: no dorado-server, no model
+mrnaspect-realtime --input-dir /path/to/run --output-dir ./out --mode bam --reference ref.fasta
 ```
 
 Both write **one JSON object to stdout** and a human sentence to stderr, so a caller and
@@ -183,12 +193,30 @@ configuration a run would use, without running anything.
 
 ## Live runs
 
-`mrnaspect-realtime` follows a MinKNOW run while it is sequencing. Its config must say
-`mode: pod5`, and it needs dorado-server and a model (see Install).
+`mrnaspect-realtime` follows a MinKNOW run while it is sequencing. It must be told what to
+follow, with `--mode` or `mode:` in its config; the shipped default is not used here.
 
-**Point `--input-dir` at the run directory, not at its `pod5/` folder.** That is the
-directory MinKNOW makes for each run, `<experiment>/<sample>/<run_id>`, with `pod5/`
-inside it. MinKNOW marks the end of a run with a `final_summary_*.txt` there, one level
+- `pod5`: MinKNOW's POD5 files, basecalled by mRNAspect as each is closed. Needs
+  dorado-server and a model (see Install).
+- `bam`: the BAM files MinKNOW basecalls itself, in the run's `bam_pass/` and `bam_fail/`
+  together (leaving the failed reads out is a qscore filter). Give `bam_pass/` or
+  `bam_fail/` as `--input-dir` instead and that folder alone is followed, as in an
+  offline BAM run; the desktop app has the same tick box on the live card. Each is taken in once
+  MinKNOW has finished writing it, the totals grow batch by batch, and nothing is
+  basecalled here: no dorado-server, no model, no GPU. The result for a finished run is
+  the offline BAM analysis's of the same files. A barcoded run has a folder per barcode
+  under each of the two; a live run follows one, named with `--barcode barcode01`, and
+  never several together. In the desktop app, the Live run card asks which files to
+  follow.
+
+A BAM that MinKNOW is still writing is not read: a size that has stopped changing is not
+enough for a BAM, so mRNAspect also waits for the end-of-file block the writer adds when
+it closes the file. This has been tested with BAM files written here, not yet on a run
+MinKNOW was basecalling.
+
+**Point `--input-dir` at the run directory, not at its `pod5/` folder** (or `bam_pass/`).
+That is the directory MinKNOW makes for each run, `<experiment>/<sample>/<run_id>`, with
+`pod5/` inside it. MinKNOW marks the end of a run with a `final_summary_*.txt` there, one level
 above the POD5 files; pointed at `pod5/`, mRNAspect never sees it and the run never ends.
 
 **Unless you stop it, a run ends only when MinKNOW ends it**, not when files stop
@@ -211,7 +239,26 @@ This only renders what had been analysed; it does not continue the run.
 **To continue a run** that was stopped or crashed, start it again with the same
 `--output-dir` and `--output-name`, or with `--continue-latest` for the most recent one.
 Files already analysed are not basecalled again, and the run carries on from where it
-stopped.
+stopped. A basecall is kept for the POD5 file and the model it was made from: if a POD5
+has since been replaced under the same name, or the run is given another model, it stops
+before analysing anything and says which one changed. The new file or model needs a run
+of its own.
+
+A run continues only with the input and the reference it was started with. The first
+start records them in the run's directory (`run_input.json`: live or not, POD5 or BAM, the
+input folder, and the reference's content). A later start with another input folder, mode
+or reference is refused before anything is analysed: a live run restores the files it had
+finished, and with another input it would report two runs as one. A directory from before
+this record holds no answer and is refused too; give a new run another name.
+
+In the desktop app, give the same Output folder and Run name. The line under Run name then
+says that Start continues the earlier run, how far it got and what is carried over, and
+that its report will be replaced; while the run goes, its card says **Continues**. A name
+not used before says "A new run". A name whose run is of another input says why it would
+be refused, in red, and Start stays off. The same answers come from Core: `--print-config` with
+`--output-dir` and `--output-name` describes that folder (`run_dir_state`), and
+`run_status.json` in the run's directory says what a continued run carried over
+(`continued`).
 
 ### Before the run: MinKNOW's POD5 interval
 
@@ -291,11 +338,15 @@ small.
 
 ## Licence
 
-mRNAspect is released under the MIT License ([LICENSE](LICENSE)), copyright © 2026
-Qbiolab. The licence covers mRNAspect's own code only. The software the desktop app
-bundles (Python and its libraries, minimap2, samtools, the Tauri runtime, plotly.js)
-keeps its own licences: the app carries each one's notice and licence text in one file,
-which About opens (written at build time by `scripts/make_notices.py`). mRNAspect does
-not include a basecaller: dorado-server and its models are Oxford Nanopore Technologies'
-software, installed by the user and used under ONT's terms. A basecalling model
-fine-tuned from an ONT model is not covered by this licence either.
+mRNAspect is released under the MIT License ([LICENSE](LICENSE)), copyright © 2026 Seoul
+National University. The licence covers mRNAspect's own code only. The software the
+desktop app bundles (Python and its libraries, minimap2, samtools, the Tauri runtime,
+plotly.js) keeps its own licences: the app carries each one's notice and licence text in
+one file, which About opens (written at build time by `scripts/make_notices.py`).
+plotly.js is also in the Python package and inside every HTML report, which is handed on
+as one file. Its licence and those of the packages it carries are in
+`mrnaspect/reporting/assets/plotly-cartesian-3.7.0.LICENSES.txt`, shipped with the
+package, and at the end of each report under "Third-party software in this file".
+mRNAspect does not include a basecaller: dorado-server and its models are Oxford
+Nanopore Technologies' software, installed by the user and used under ONT's terms. A
+basecalling model fine-tuned from an ONT model is not covered by this licence either.

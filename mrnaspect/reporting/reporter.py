@@ -45,8 +45,10 @@ _TEMPLATE_DIR = _HERE / "templates"
 _ASSET_DIR = _HERE / "assets"
 # The bundle's file name is pinned in figspec.
 from .figspec import PLOTLY_BUNDLE as _PLOTLY_BUNDLE  # noqa: E402
+from .figspec import PLOTLY_NOTICES as _PLOTLY_NOTICES  # noqa: E402
 
 _PLOTLY_PATH = _ASSET_DIR / _PLOTLY_BUNDLE
+_PLOTLY_NOTICES_PATH = _ASSET_DIR / _PLOTLY_NOTICES
 _TEMPLATE_NAME = "sample_coa.html"
 
 # Terminal reasons accepted by finalize().
@@ -723,13 +725,19 @@ class CoAReporter(Reporter):
     def _screen_figures(figures: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         """The screen's figure keys: every spec as one JSON blob for the page's script
         (also written as figures.json, so `section` and `panel` travel with each spec),
-        their headings, and plotly itself, inlined so the HTML works as a single file."""
+        their headings, and plotly itself, inlined so the HTML works as a single file.
+
+        With plotly go its licence notices and those of the packages inside it: the
+        file is handed on by itself, and those licences ask that their text go with
+        every copy."""
         return {
             "interactive_json": _figures_json(figures),
             "interactive": [{"id": f["id"], "title": f["title"],
                              "section": f["section"],
                              "caption": f["caption"]} for f in figures],
             "plotly_js": (_PLOTLY_PATH.read_text(encoding="utf-8") if figures else ""),
+            "plotly_notices": (_PLOTLY_NOTICES_PATH.read_text(encoding="utf-8")
+                               if figures else ""),
         }
 
     def _run_box(self) -> list[dict[str, str]]:

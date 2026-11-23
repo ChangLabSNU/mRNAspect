@@ -37,7 +37,9 @@ description = "Unified QC for mRNA therapeutics from Oxford Nanopore direct RNA 
 readme = "README.md"
 # MIT (2026-11-13). The SPDX form, which setuptools reads from 77 on.
 license = "MIT"
-license-files = ["LICENSE"]
+# The second is the plotly bundle's: the wheel carries plotly.js and the packages inside
+# it, so it carries their terms (mrnaspect/tests/test_plotly_notices.py).
+license-files = ["LICENSE", "mrnaspect/reporting/assets/*.LICENSES.txt"]
 requires-python = ">=3.10"
 
 # MEASURED, not guessed: the only third-party modules Core imports at top level,
@@ -104,5 +106,6 @@ mrnaspect = ["config/run_config.yaml", "config/nulls/*"]
 # copy raises FileNotFoundError at the final render — the run fails after all the work,
 # and only on a packaged install, never in the repo. Guarded by
 # mrnaspect/tests/test_plotly_bundle_contract.py.
-"mrnaspect.reporting" = ["templates/*.html", "assets/*.js"]
+# With the bundle, its licence notices: the report embeds both.
+"mrnaspect.reporting" = ["templates/*.html", "assets/*.js", "assets/*.LICENSES.txt"]
 "mrnaspect.wrappers" = ["*.sh"]

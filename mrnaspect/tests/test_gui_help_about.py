@@ -3,7 +3,7 @@
 - The Help button opened About. It opens a Help page of its own: which folder each run
   kind takes (the first thing a new user got wrong on a live run), what the Overview
   shows, where the results go.
-- About carries the copyright (Qbiolab, 2026-11-12), the licence, that mRNAspect is
+- About carries the copyright (the university's, as LICENSE has it), the licence, that mRNAspect is
   not Oxford Nanopore Technologies' software, that its results carry no warranty, and
   the third-party software it ships.
 
@@ -61,13 +61,14 @@ def test_help_names_the_live_run_folder_as_core_reads_it() -> None:
 
 
 def test_about_names_the_copyright_holder() -> None:
-    assert '<p id="copyright">Copyright © 2026 Qbiolab.</p>' in _section("about")
+    assert '<p id="copyright">Copyright © 2026 Seoul National University.</p>' in _section("about")
 
 
-def test_core_is_mit_licensed_to_qbiolab() -> None:
-    """MIT, copyright Qbiolab (2026-11-13); the file is the licence's own text."""
+def test_core_is_mit_licensed_to_the_university() -> None:
+    """MIT, copyright Seoul National University: a laboratory has no legal personality, so
+    the university is named. The file is the licence's own text."""
     text = (_REPO / "LICENSE").read_text()
-    assert text.startswith("MIT License\n\nCopyright (c) 2026 Qbiolab\n")
+    assert text.startswith("MIT License\n\nCopyright (c) 2026 Seoul National University\n")
     assert "Permission is hereby granted, free of charge" in text
     assert 'THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND' in text
 

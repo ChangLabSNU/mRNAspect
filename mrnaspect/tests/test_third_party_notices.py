@@ -16,6 +16,7 @@ and that staging, the bundle check, the shell and About all use it.
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.util
 import json
 import os
@@ -122,7 +123,7 @@ def _world(parent: Path) -> Path:
              texts={"COPYING.MPL": "the MPL text\n", "LICENSE": "tri-license\n"})
 
     root = world / "checkout"
-    _write(root / "LICENSE", "MIT License\n\nCopyright (c) 2026 Qbiolab\n\n"
+    _write(root / "LICENSE", "MIT License\n\nCopyright (c) 2026 Seoul National University\n\n"
            "Permission is hereby granted, free of charge, to any person obtaining a copy\n"
            "of this software.\n")
     _write(root / "gui/package-lock.json", json.dumps({"lockfileVersion": 3, "packages": {
@@ -137,12 +138,30 @@ def _world(parent: Path) -> Path:
            "PackageLicenseDeclared: Apache-2.0\nPackageLicenseDeclared: MIT\n"
            "PackageCopyrightText: 2019-2022, The Tauri Programme in the Commons Conservancy\n")
     _write(root / "gui/node_modules/vite/LICENSE", "vite's text\n")
-    _write(root / "gui/public/plotly-cartesian-3.7.0.min.js",
-           "/**\n* plotly.js (cartesian - minified) v3.7.0\n* Copyright 2012-2026, Plotly, Inc.\n"
-           "* All rights reserved.\n* Licensed under the MIT license\n*/\nvar Plotly={};\n"
-           "/*! Bundled license information:\n\nobject-assign/index.js:\n  (*\n  object-assign\n"
-           "  (c) Sindre Sorhus\n  @license MIT\n  *)\n*/\n")
+    bundle = ("/**\n* plotly.js (cartesian - minified) v3.7.0\n* Copyright 2012-2026, Plotly, Inc.\n"
+              "* All rights reserved.\n* Licensed under the MIT license\n*/\nvar Plotly={};\n"
+              "/*! Bundled license information:\n\nobject-assign/index.js:\n  (*\n  object-assign\n"
+              "  (c) Sindre Sorhus\n  @license MIT\n  *)\n*/\n")
+    _write(root / "gui/public/plotly-cartesian-3.7.0.min.js", bundle)
+    # The texts kept beside the report's copy of the bundle, which name it by sha256.
+    _write(root / "mrnaspect/reporting/assets/plotly-cartesian-3.7.0.LICENSES.txt",
+           f"Licence notices for plotly-cartesian-3.7.0.min.js (sha256 "
+           f"{hashlib.sha256(bundle.encode()).hexdigest()})\n\nplotly.js 3.7.0\nMIT License\n"
+           "Copyright (c) 2016-2024 Plotly Technologies Inc.\n"
+           "Permission is hereby granted, free of charge, to any person\n\n"
+           "object-assign 4.1.1\nCopyright (c) Sindre Sorhus\nthe whole MIT text\n")
     _write(root / "gui/src-tauri/Cargo.toml", "[package]\nname = \"mrnaspect-shell\"\n")
+    # A package installed from a wheel: conda has no record of it, its .dist-info does.
+    site = world / "env/lib/python3.14/site-packages"
+    _write(site / "weasyprint/__init__.py", "__version__ = '70.0'\n")
+    _write(site / "weasyprint-70.0.dist-info/INSTALLER", "uv-pixi\n")
+    _write(site / "weasyprint-70.0.dist-info/METADATA",
+           "Metadata-Version: 2.4\nName: weasyprint\nVersion: 70.0\n"
+           "Classifier: License :: OSI Approved :: BSD License\n"
+           "Project-URL: Homepage, https://weasyprint.org/\n\nThe description.\n")
+    _write(site / "weasyprint-70.0.dist-info/RECORD",
+           "weasyprint/__init__.py,,\nweasyprint-70.0.dist-info/METADATA,,\n")
+    _write(site / "weasyprint-70.0.dist-info/licenses/LICENSE", "weasyprint's BSD text\n")
     return world
 
 
@@ -243,7 +262,9 @@ def test_the_same_environment_gives_the_same_file(tmp_path: Path) -> None:
     assert first and first == second
     # Between the contents' line 2 and section 2's heading: section 1.
     names = re.findall(r"^-{80}\n(\S+) \S+\n-{80}$", first.split("2. The app window")[1], re.M)
-    assert names == sorted(names, key=str.lower) and len(names) == 8
+    # Eight that conda installed and one from a wheel, in one list by name.
+    assert names == sorted(names, key=str.lower) and len(names) == 9
+    assert "weasyprint" in names
 
 
 def test_a_copyleft_package_says_where_the_source_of_this_build_is(tmp_path: Path) -> None:
@@ -374,13 +395,74 @@ def test_a_page_package_with_only_an_spdx_file_takes_its_publishers_texts(
     assert "INCOMPLETE" not in text, proc.stderr
 
 
+def test_a_package_installed_from_a_wheel_is_listed_from_its_dist_info(tmp_path: Path) -> None:
+    """conda records what conda installs. WeasyPrint comes from its wheel, and went
+    unlisted: neither the file nor its check knew it was there."""
+    world = _world(tmp_path)
+    proc, text = _generate(world)
+    entry = _entry(text, "weasyprint 70.0")
+    assert "Licence: BSD License" in entry and "Home: https://weasyprint.org/" in entry
+    assert "its wheel (PyPI)" in entry and "weasyprint's BSD text" in entry
+    assert "INCOMPLETE" not in text, proc.stderr
+    assert _run("--check", world / "env").returncode == 0
+
+
+def test_core_itself_and_a_record_left_behind_are_not_listed(tmp_path: Path) -> None:
+    """The file is about other people's software; and a .dist-info with none of its
+    package's files is not a package in the environment."""
+    world = _world(tmp_path)
+    site = world / "env/lib/python3.14/site-packages"
+    _write(site / "mrnaspect/__init__.py", "")
+    _write(site / "mrnaspect-0.1.0.dist-info/INSTALLER", "pip\n")
+    _write(site / "mrnaspect-0.1.0.dist-info/METADATA", "Name: mrnaspect\nVersion: 0.1.0\n")
+    _write(site / "oldname-0.1.0.dist-info/INSTALLER", "pip\n")
+    _write(site / "oldname-0.1.0.dist-info/METADATA", "Name: oldname\nVersion: 0.1.0\n")
+    _write(site / "oldname-0.1.0.dist-info/RECORD",
+           "oldname/__init__.py,,\n__pycache__/oldname.cpython-314.pyc,,\n"
+           "oldname-0.1.0.dist-info/METADATA,,\n")
+    _write(site / "__pycache__/oldname.cpython-314.pyc", "left behind")
+    proc, text = _generate(world)
+    assert "\nmrnaspect 0.1.0\n" not in text and "\noldname 0.1.0\n" not in text
+    assert "INCOMPLETE" not in text, proc.stderr
+
+
+def test_a_wheel_install_without_a_licence_text_makes_the_file_say_incomplete(
+        tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    (world / "env/lib/python3.14/site-packages/weasyprint-70.0.dist-info/licenses/LICENSE").unlink()
+    _, text = _generate(world)
+    assert "INCOMPLETE" in text and "no licence text was found for weasyprint 70.0" in text
+
+
+def test_the_check_fails_when_a_wheel_install_is_not_in_the_file(tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    _generate(world)
+    site = world / "env/lib/python3.14/site-packages"
+    _write(site / "newcomer/__init__.py", "")
+    _write(site / "newcomer-1.0.dist-info/METADATA", "Name: newcomer\nVersion: 1.0\n")
+    proc = _run("--check", world / "env")
+    assert proc.returncode == 1
+    assert "newcomer 1.0 is in the environment (installed from a wheel)" in proc.stdout + proc.stderr
+
+
 def test_plotly_comes_with_its_header_its_licence_and_what_it_bundles(tmp_path: Path) -> None:
     _, text = _generate(_world(tmp_path))
-    plotly = _entry(text.split("3. The page")[2], "plotly.js 3.7.0")
+    plotly = text.split("3. The page")[2]
+    plotly = plotly[plotly.index("plotly.js 3.7.0"):]
     assert "Copyright 2012-2026, Plotly, Inc." in plotly
+    # plotly's own licence and copyright line, not this project's, and each bundled
+    # package's whole text, not the bundle's one-line mention of it.
+    assert "Copyright (c) 2016-2024 Plotly Technologies Inc." in plotly
     assert "Permission is hereby granted, free of charge" in plotly
-    assert "Copyright (c) 2026 Qbiolab" not in plotly, "the permission notice, not our copyright"
-    assert "(c) Sindre Sorhus" in plotly
+    assert "Seoul National University" not in plotly
+    assert "Copyright (c) Sindre Sorhus\nthe whole MIT text" in plotly
+
+
+def test_plotly_without_the_kept_texts_makes_the_file_say_incomplete(tmp_path: Path) -> None:
+    world = _world(tmp_path)
+    (world / "checkout/mrnaspect/reporting/assets/plotly-cartesian-3.7.0.LICENSES.txt").unlink()
+    proc, text = _generate(world)
+    assert "INCOMPLETE" in text and "plotly's notices could not be written" in text
 
 
 def test_a_page_package_that_is_not_installed_is_incomplete(tmp_path: Path) -> None:
@@ -403,7 +485,7 @@ def test_the_first_page_says_what_the_file_is_and_what_the_app_does_not_carry(
     for name in ("dorado_basecall_server", "ont_basecall_client", "MinKNOW",
                  "Oxford Nanopore Technologies"):
         assert name in head
-    assert "8 packages" in head and "3 Rust crates" in head
+    assert "9 packages" in head and "3 Rust crates" in head
 
 
 def test_the_check_passes_on_a_whole_file_and_fails_when_a_package_is_not_in_it(
@@ -444,8 +526,13 @@ def test_in_the_environment_here_every_package_has_its_text() -> None:
                for r in records[:5]):
         pytest.skip("the package cache behind this environment is gone")
     entries, missing = make.collect_env(env)
-    assert len(entries) == len(records)
+    wheels = make.wheel_installs(env)
+    assert len(entries) == len(records) + len(wheels)
     assert not missing, missing
+    # WeasyPrint is installed from its wheel, which conda has no record of.
+    assert [w["name"] for w in wheels] == ["weasyprint"]
+    printer = next(e for e in entries if e.name == "weasyprint")
+    assert any("BSD 3-Clause License" in text for _, text in printer.texts)
 
 
 def test_the_real_page_gives_plotlys_header_and_bundled_notices() -> None:
@@ -454,8 +541,9 @@ def test_the_real_page_gives_plotlys_header_and_bundled_notices() -> None:
     plotly = [e for e in entries if e.name == "plotly.js"]
     assert len(plotly) == 1 and re.fullmatch(r"\d+\.\d+\.\d+", plotly[0].version)
     joined = "\n".join(text for _, text in plotly[0].texts)
-    assert "Plotly, Inc." in joined and "Bundled license information" in joined
+    assert "Plotly, Inc." in joined and "Plotly Technologies Inc." in joined
     assert "Permission is hereby granted" in joined
+    assert "Copyright 2008 Fair Oaks Labs, Inc." in joined
     # node_modules is not on every host; when it is, nothing may be missing.
     if (_GUI / "node_modules").is_dir():
         assert not missing, missing

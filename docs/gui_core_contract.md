@@ -86,12 +86,12 @@ an empty string passed through.
 
 **One argument comes from the shell rather than from a field.**
 
-- `--config <generated>.yaml`, **live mode only.** `mrnaspect-realtime` has no `--mode` flag
-  on purpose: its watcher releases `*.pod5` unconditionally, so it is pod5-only by
-  construction and refuses to start unless the *resolved* config says so. The shipped
-  default is `mode: bam`, so the shell writes a small config next to the logs saying
-  `pod5`. It lands in the run's own output directory rather than a temp file, so it
-  survives as a record of what the run was given.
+- `--config <generated>.yaml`, **live mode only.** `mrnaspect-realtime` follows MinKNOW's
+  POD5 files or the BAM files MinKNOW basecalls, and must be told which: it does not take
+  the shipped default (`mode: bam`) as an answer, since a run folder holds both kinds.
+  The Live run card asks, and the shell writes a one-key config next to the logs saying
+  `mode: pod5` or `mode: bam`. It lands in the run's own output directory rather than a
+  temp file, so it survives as a record of what the run was given.
 
 `--min-reads 1` was a second one, in both modes, until 2026-11-02; see §7.
 
@@ -142,6 +142,36 @@ exists, inside a `try`, so an operator mistake reaches the terminal as
 basecall cache — on a 20 h run, that is the entire GPU cost not paid twice. Every run gets
 its own subdirectory because artifacts are named by KIND, not by run, so two runs sharing
 a directory silently overwrite each other's report and `qc_result.json`.
+
+**Whether a name continues a run is said, before and during the run.** Nothing did until
+2026-11-23, so an operator could not tell a continued run from a new one. Before Start,
+`--print-config` given `--output-dir` and `--output-name` adds `run_dir_state` for the
+folder a Start would write (`runtime/run_dir_state.py`): `exists`; the earlier attempt's
+last progress from its `run_status.json`; the reason of the report already there
+(`run_end`, `user_abort`, or none); `inputs_on_record` (the live driver's manifest, which a
+live run restores without processing again); `basecalls_cached` (the offline driver's
+record, reused where the POD5 and the model are unchanged); `unreadable`. The shell's
+`read_config` passes the two fields, and the hint under Run name says what Start will do.
+While the run goes, `run_status.json` carries `continued`: `null` for a new run,
+`{"inputs_restored": n}` from the live driver, `{"basecalls_cached": n}` from the offline
+one. Each driver is told by its command line (`continues=existed`, sampled before logging
+creates the folder), since the folder exists by the time the driver is built.
+
+**A name continues a run only with the same input** (`runtime/run_input.py`, 2026-11-23).
+A live run continued on another MinKNOW run restored the first run's files from its
+manifest and went on with the second's, so one report held both. The first start in a run
+folder writes `run_input.json`: driver (`live` / `offline`), mode, the input folder
+resolved, the reference's path and the sha256 of its content (the content is compared:
+the shell writes a pasted reference to a new file at every start). Both command lines call
+`check_run_input` after building the driver and before anything runs; another driver,
+mode, input folder or reference content is refused (`RunInputMismatch`, a `ValueError`,
+so exit 2), naming each difference. A folder that holds an earlier run's files but no
+record is refused too (it cannot be checked); `run.log` alone, or nothing, is a new run.
+Before Start, `--print-config` given `--input-dir`, `--reference`, `--mode` and `--live`
+adds `recorded_input`, `refusal` (the same function's words) and `not_compared` (a pasted
+reference, not yet written) to `run_dir_state`; the shell's `read_config` passes what
+`start_qc` would, the page shows a refusal in red under Run name and keeps Start off, and
+it asks again 300 ms after the last key, not only when a field loses focus.
 
 **The name must be a single directory name.** `resolve_run_dir` refuses a separator, `..`,
 `.` or an absolute path, because `output_dir / name` would otherwise leave the directory

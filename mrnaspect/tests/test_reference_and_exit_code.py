@@ -22,12 +22,14 @@ import json
 import re
 from pathlib import Path
 
+import pysam
 import pytest
 
 from mrnaspect.tests.conftest import passthrough_align, run_dir_of, write_distinct_bam
 
 from mrnaspect.main import OfflinePipeline, load_config, main
-from mrnaspect.runtime.reference_check import ReferenceError, reference_contigs
+from mrnaspect.runtime.reference_check import (ReferenceError, compression,
+                                               reference_contigs)
 
 
 # ---------------------------------------------------------------------------
@@ -78,12 +80,70 @@ def test_bare_header_is_rejected(tmp_path: Path) -> None:
         reference_contigs(ref)
 
 
-def test_gzipped_reference_is_accepted(tmp_path: Path) -> None:
-    """minimap2 takes gzipped FASTA, so the validator must not reject one."""
+def _bgzip(src: Path, dst: Path) -> Path:
+    pysam.tabix_compress(str(src), str(dst), force=True)
+    return dst
+
+
+def test_bgzf_reference_is_accepted(tmp_path: Path) -> None:
+    """BGZF (bgzip) can be indexed, so it is a reference like an uncompressed one."""
+    plain = tmp_path / "ref.fa"
+    plain.write_text(">ccA desc here\nACGT\n>ccB\nTTTT\n")
+    ref = _bgzip(plain, tmp_path / "ref.fa.gz")
+    assert compression(ref) == "bgzf" and compression(plain) == "plain"
+    assert reference_contigs(ref) == ["ccA", "ccB"]
+
+
+def test_ordinary_gzip_reference_is_refused(tmp_path: Path) -> None:
+    """minimap2 reads ordinary gzip; the engine cannot index it. The validator used to
+    accept it, and every read was then counted as a bad read in a run that exited 0."""
     ref = tmp_path / "ref.fa.gz"
     with gzip.open(ref, "wt") as fh:
         fh.write(">ccA desc here\nACGT\n>ccB\nTTTT\n")
-    assert reference_contigs(ref) == ["ccA", "ccB"]
+    assert compression(ref) == "gzip"
+    with pytest.raises(ReferenceError, match="ordinary gzip") as err:
+        reference_contigs(ref)
+    assert str(ref) in str(err.value)
+    assert "gunzip" in str(err.value) and "bgzip" in str(err.value)
+
+
+def _cli_on_fixture(tmp_path: Path, fixture_bam: Path, ref: Path) -> tuple[int, Path]:
+    import shutil
+
+    in_dir = tmp_path / "in"
+    in_dir.mkdir()
+    shutil.copy(fixture_bam, in_dir / "small_aligned.bam")
+    out = tmp_path / "out"
+    code = main(["--input-dir", str(in_dir), "--output-dir", str(out),
+                 "--reference", str(ref), "--mode", "bam", "--min-reads", "1"])
+    return code, out
+
+
+def test_cli_refuses_an_ordinary_gzip_reference_before_any_read(
+    tmp_path: Path, fixture_bam: Path, curlcake_ref: Path, capsys
+) -> None:
+    """Exit non-zero with the file and the remedy named, and no report of any kind."""
+    ref = tmp_path / "curlcake_ref.fasta.gz"
+    with gzip.open(ref, "wb") as fh:
+        fh.write(curlcake_ref.read_bytes())
+    code, out = _cli_on_fixture(tmp_path, fixture_bam, ref)
+    assert code != 0
+    said = capsys.readouterr().out
+    assert str(ref) in said and "ordinary gzip" in said and "bgzip" in said
+    written = [p.name for p in out.rglob("*") if p.is_file()] if out.exists() else []
+    assert not [n for n in written if n.endswith((".json", ".pdf", ".html", ".bam"))], written
+
+
+@pytest.mark.parametrize("compressed", [False, True], ids=["uncompressed", "bgzf"])
+def test_cli_runs_on_an_uncompressed_and_on_a_bgzf_reference(
+    tmp_path: Path, fixture_bam: Path, curlcake_ref: Path, compressed: bool
+) -> None:
+    ref = _bgzip(curlcake_ref, tmp_path / "curlcake_ref.fasta.gz") if compressed else curlcake_ref
+    code, out = _cli_on_fixture(tmp_path, fixture_bam, ref)
+    assert code == 0
+    result = json.loads((run_dir_of(out) / "qc_result.json").read_text())
+    assert result["snapshots"]["run_summary"]["mapping"]["mapped"] == 166
+    assert len(result["qc_metrics"]["constructs"]) == 4
 
 
 def test_too_many_contigs_is_rejected(tmp_path: Path) -> None:
@@ -472,9 +532,10 @@ def test_a_record_without_sequence_is_refused(tmp_path: Path) -> None:
         reference_contigs(ref)
 
 
-def test_a_bad_character_in_a_gzipped_reference_is_refused(tmp_path: Path) -> None:
-    ref = tmp_path / "ref.fa.gz"
-    with gzip.open(ref, "wt") as fh:
-        fh.write(">c1\nACGTNACGT\n")
+def test_a_bad_character_in_a_bgzf_reference_is_refused(tmp_path: Path) -> None:
+    """The sequence check reads a compressed reference too."""
+    plain = tmp_path / "ref.fa"
+    plain.write_text(">c1\nACGTNACGT\n")
+    ref = _bgzip(plain, tmp_path / "ref.fa.gz")
     with pytest.raises(ReferenceError, match="'N' is not A, C, G, T or U"):
         reference_contigs(ref)

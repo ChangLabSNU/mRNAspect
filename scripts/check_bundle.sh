@@ -6,6 +6,7 @@
 # the Mac -- so this is the check to run on the first build, before concluding anything.
 #
 #     bash scripts/check_bundle.sh "gui/src-tauri/target/release/bundle/macos/mRNAspect.app"
+#     bash scripts/check_bundle.sh <the .app> <commit>     a release: built from that commit
 #
 # The thing most likely to be wrong is SYMLINKS. The environment has 1,584 of them and
 # `bin/python3` is one (-> python3.14), which is precisely the path the shell looks for.
@@ -13,7 +14,10 @@
 # should be; if it drops them, the interpreter is simply not there.
 set -u
 
-APP="${1:?usage: check_bundle.sh <path to .app>}"
+APP="${1:?usage: check_bundle.sh <path to .app> [<commit the release is of>]}"
+# For a release: check 12 then asks that the app was built from exactly this commit, from
+# an unmodified tree, whatever this checkout is at.
+EXPECT="${2:-}"
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # Without this a wrong path ran every check against nothing and ended "0 passed,
 # 4 failed", which reads as a broken bundle (2026-10-29: the path had lost bundle/).
@@ -100,10 +104,10 @@ else
 fi
 
 printf '\n\033[1m== 7. what the app must not carry is not in the bundle\033[0m\n'
-printf '  Staging leaves out readline (GPL-3.0-only) and the hyphenation dictionaries of\n'
-printf '  pyphen. Asked of the artifact: their files, the record,\n'
-printf '  Python'"'"'s readline module, every binary that could still link the library, and\n'
-printf '  that pyphen still imports.\n'
+printf '  Staging leaves out readline (GPL-3.0-only), the hyphenation dictionaries of\n'
+printf '  pyphen, and pypdf, which only the tests use. Asked of the artifact: their files,\n'
+printf '  the records, Python'"'"'s readline module, every binary that could still link the\n'
+printf '  library, and that pyphen still imports.\n'
 if [ -f "$PY" ]; then
     out=$(env -i PATH=/usr/bin:/bin HOME="$TMPDIR" "$PY" -I -B "$HERE/strip_bundle_env.py" --check "$RES" 2>&1)
     check=$?
@@ -206,14 +210,22 @@ printf '  Staging writes the commit into the installed package (scripts/bundle_b
 printf '  and Core reads it there. Asked twice: the record is there and is one; and Core,\n'
 printf '  run from the app, reports that commit, which is what a result will carry. Without\n'
 printf '  it a result names a version and no build, and many builds share one version.\n'
+printf '  The commit must also be the one this checkout is at, or for a release the one\n'
+printf '  given as the second argument: an app of another commit is not this source'"'"'s.\n'
 if [ -f "$PY" ]; then
-    out=$(env -i PATH=/usr/bin:/bin HOME="$TMPDIR" "$PY" -I -B "$HERE/bundle_build_record.py" \
-          --check "$RES" --source "$HERE/.." 2>&1)
-    check=$?
+    if [ -n "$EXPECT" ]; then
+        out=$(env -i PATH=/usr/bin:/bin HOME="$TMPDIR" "$PY" -I -B "$HERE/bundle_build_record.py" \
+              --check "$RES" --source "$HERE/.." --expect "$EXPECT" 2>&1)
+        check=$?
+    else
+        out=$(env -i PATH=/usr/bin:/bin HOME="$TMPDIR" "$PY" -I -B "$HERE/bundle_build_record.py" \
+              --check "$RES" --source "$HERE/.." 2>&1)
+        check=$?
+    fi
     printf '%s\n' "$out" | sed 's/^/  /'
-    recorded=$(printf '%s\n' "$out" | sed -n 's/.*built from \([0-9a-f]\{40\}\) .*/\1/p' | head -1)
+    recorded=$(printf '%s\n' "$out" | sed -n 's/.*built from \([0-9a-f]\{40\}\) (.*/\1/p' | head -1)
     if [ $check != 0 ]; then
-        bad "the app has no usable record of the commit it was built from"
+        bad "the app has no usable record of the commit it was built from, or it is of another commit"
     elif [ -z "$recorded" ]; then
         printf '  \033[33mNOTE\033[0m  no commit was there to record: results from this app name none\n'
     else

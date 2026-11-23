@@ -490,6 +490,10 @@ PLOTLY_BUNDLE = "plotly-cartesian-3.7.0.min.js"
 PLOTLY_BUNDLE_SHA256 = (
     "7c593b9eda0e74a1d07335cf89cbf7a55ffc114909980c3729af835453bdb02a")
 
+#: The licence texts of plotly.js and of every package inside that bundle, beside it.
+#: Written by scripts/vendor_plotly_notices.py; whatever carries the bundle carries this.
+PLOTLY_NOTICES = "plotly-cartesian-3.7.0.LICENSES.txt"
+
 #: Trace types the pinned bundle can actually draw. Anything else is a blank panel.
 SUPPORTED_TRACE_TYPES = frozenset({"scatter", "bar", "heatmap"})
 

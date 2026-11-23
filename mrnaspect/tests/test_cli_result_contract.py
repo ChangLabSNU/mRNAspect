@@ -127,13 +127,13 @@ def test_every_input_failing_exits_one_although_a_report_rendered(
 def test_the_realtime_cli_refuses_with_the_same_object(tmp_path: Path, capsys) -> None:
     """The realtime driver had its own copy of this logic, which is how they drifted."""
     cfg = tmp_path / "cfg.yaml"
-    cfg.write_text("mode: bam\nreference: /placeholder/ref.fasta\n", encoding="utf-8")
+    cfg.write_text("reference: /placeholder/ref.fasta\n", encoding="utf-8")
     (tmp_path / "run").mkdir()
     code = realtime_main(["--input-dir", str(tmp_path / "run"),
                           "--output-dir", str(tmp_path / "out"), "--config", str(cfg)])
     obj = _emitted(capsys)
     assert code == 2 and obj["exit_code"] == 2 and obj["status"] == "error"
-    assert "requires mode=pod5" in obj["error"]
+    assert "needs to be told what to follow" in obj["error"]
 
 
 @pytest.mark.parametrize("entry", [offline_main, realtime_main], ids=["offline", "realtime"])

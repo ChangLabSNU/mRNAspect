@@ -81,6 +81,7 @@ done
 
 echo "running ${#ALL[@]} test files in $N shards (shard 0 holds ${#PINNED[@]} port-using files)"
 start=$SECONDS
+LAUNCHED=(); PIDS=()
 for k in $(seq 0 $(( N - 1 ))); do
   [ -z "${SHARD[$k]:-}" ] && continue
   (
@@ -90,21 +91,46 @@ for k in $(seq 0 $(( N - 1 ))); do
       > "$OUT/shard_$k.log" 2>&1
     echo "$?" > "$OUT/shard_$k.rc"
   ) &
+  LAUNCHED+=("$k"); PIDS+=("$!")
 done
-wait
-elapsed=$(( SECONDS - start ))
 
+# Every worker that was started is waited for by its own PID and must have left a result.
+# A bare `wait` returns 0 whatever became of the workers, and the loop then read whichever
+# result files it found: a worker that died before writing its file was not counted, and
+# the other shards' passes were reported as the suite's.
 rc=0
 total=0
-for f in "$OUT"/shard_*.rc; do
-  k="$(basename "$f" .rc)"
-  code="$(cat "$f")"
-  line="$(grep -E '^[0-9]+ (passed|failed)|passed|failed|error' "$OUT/$k.log" | tail -1)"
-  n="$(sed -n 's/^\([0-9]\+\) passed.*/\1/p' <<< "$line")"
+for i in "${!LAUNCHED[@]}"; do
+  k="${LAUNCHED[$i]}"
+  log="$OUT/shard_$k.log"
+  wait "${PIDS[$i]}"
+  worker=$?
+  if [ ! -f "$OUT/shard_$k.rc" ]; then
+    printf 'shard_%-3s NO RESULT: the worker ended (status %s) before reporting. See %s\n' \
+      "$k" "$worker" "$log"
+    rc=1
+    continue
+  fi
+  code="$(cat "$OUT/shard_$k.rc")"
+  case "$code" in
+    ''|*[!0-9]*)
+      printf 'shard_%-3s INVALID RESULT %s in %s. See %s\n' \
+        "$k" "'$code'" "$OUT/shard_$k.rc" "$log"
+      rc=1
+      continue ;;
+  esac
+  line="$(grep -E '^[0-9]+ (passed|failed)|passed|failed|error' "$log" | tail -1)"
+  # `sed -E`, not `\+` in a basic expression: `\+` is a GNU extension that the sed of
+  # macOS reads as a literal "+", so nothing matched there and the total stayed 0.
+  n="$(sed -n -E 's/^([0-9]+) passed.*/\1/p' <<< "$line")"
   [ -n "$n" ] && total=$(( total + n ))
-  printf '%-9s exit %-3s %s\n' "$k" "$code" "$line"
-  [ "$code" != "0" ] && rc=1
+  printf 'shard_%-3s exit %-3s %s\n' "$k" "$code" "$line"
+  if [ "$code" != "0" ] || [ "$worker" != "0" ]; then
+    echo "          failed: see $log"
+    rc=1
+  fi
 done
+elapsed=$(( SECONDS - start ))
 
 echo "----"
 if [ "$rc" -eq 0 ]; then

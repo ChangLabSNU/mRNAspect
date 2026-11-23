@@ -88,9 +88,11 @@ ln -sf "$(realpath "$POD5_FILE")" "$POD5_DIR/"
 
 # --- publish by rename --------------------------------------------------------
 # run_align.sh merges every BAM in $BASECALL_OUT, so chunks left there by a killed run
-# would come back as duplicate reads. Chunks go to a .partial sibling, renamed into
+# would come back as duplicate reads. Chunks go to a partial- sibling, renamed into
 # place only once validated (same directory, so the rename does not cross filesystems).
-PARTIAL_OUT="${BASECALL_OUT}.partial"
+# The name is a prefix because a suffix collides: x.partial.pod5 basecalls into
+# basecall_x.partial, which a suffix would also make x.pod5's unfinished folder.
+PARTIAL_OUT="$RESULTS_DIR/partial-basecall_${PREFIX}"
 rm -rf "$PARTIAL_OUT"
 mkdir -p "$PARTIAL_OUT"
 
@@ -106,7 +108,7 @@ now_ms() {
 
 START_MS=$(now_ms)
 
-$CLIENT \
+"$CLIENT" \
     -i "$POD5_DIR" \
     -s "$PARTIAL_OUT" \
     --port $PORT --use_tcp \
@@ -128,7 +130,7 @@ if [[ -z "$(find "$PARTIAL_OUT" -name '*.bam' -type f -print -quit)" ]]; then
     exit 1
 fi
 
-# `mv A.partial A` nests when A exists, so the old directory goes first. In between, the
+# `mv partial-A A` nests when A exists, so the old directory goes first. In between, the
 # path is absent, which a restart treats as a cache miss.
 rm -rf "$BASECALL_OUT"
 mv "$PARTIAL_OUT" "$BASECALL_OUT"

@@ -465,9 +465,10 @@ def test_samtools_is_run_the_ways_core_runs_it() -> None:
     follow when Core runs samtools another way.
     """
     align = (_ROOT / "mrnaspect" / "wrappers" / "run_align.sh").read_text()
-    core = set(re.findall(r"\$SAMTOOLS ([a-z]+)", align))
+    # Quoted, as the script runs it: the path may hold a space.
+    core = set(re.findall(r'"\$SAMTOOLS" ([a-z]+)', align))
     checked = re.findall(r'loaded "\$RES/bin/samtools" (\S+)', _CHECK.read_text())
-    assert core, "run_align.sh no longer names samtools as $SAMTOOLS"
+    assert core, 'run_align.sh no longer runs samtools as "$SAMTOOLS"'
     assert set(checked) == core, f"Core runs {sorted(core)}; the check runs {sorted(checked)}"
 
 
